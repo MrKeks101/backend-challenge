@@ -64,7 +64,7 @@ Princípios que guiam todas as decisões:
 | # | Tema | Decisão | Status |
 |---|---|---|---|
 | D1 | Dinheiro | `Money` com **`bigint` em centavos** (escala 2) no domínio; `numeric(19,2)` + `char(3)` no banco; string no JSON | ✅ |
-| D2 | ORM | **MikroORM** com `EntitySchema` (sem decorators), modelos de persistência **separados** do domínio e mappers via `rehydrate` | ✅ / 🟡 compat. Bun |
+| D2 | ORM | **MikroORM** com `EntitySchema` (sem decorators), modelos de persistência **separados** do domínio e mappers via `rehydrate` | ✅ (compat. Bun validada no M1) |
 | D3 | Concorrência | **Lock pessimista** `SELECT … FOR UPDATE` na wallet + guarda `version` no `UPDATE` + `CHECK (balance >= 0)` | ✅ |
 | D4 | Idempotência | `INSERT … ON CONFLICT DO NOTHING` em `wager_transactions` com `UNIQUE(idempotency_key)` e `UNIQUE(provider_id, external_transaction_id)`, comparando `payload_hash` | ✅ |
 | D5 | Fluxo | Ordem fixa de aquisição: **(1) inbox → (2) claim de idempotência → (3) lock da wallet**; READ COMMITTED | ✅ |
@@ -77,6 +77,7 @@ Princípios que guiam todas as decisões:
 | D12 | Camadas | Módulos por contexto (`wallet`, `wagering`, `messaging`) em camadas domain/application/infrastructure/interfaces; DI sempre por **token explícito** | ✅ |
 | D13 | Observabilidade/Testes/Auth | pino JSON + AsyncLocalStorage; `prom-client`; testes de integração com `docker-compose.test.yml`; **auth não implementada** (decisão do autor), só `AuthGuard` global no-op + `ProviderIdentityPort` (adapter no-op) como pontos de extensão | ✅ |
 | D14 | Emulador SQS | **MiniStack** (sem conta/token); validado com 10 verificações de FIFO, visibilidade, redrive e DLQ | ✅ |
+| D15 | Migrations | **SQL escrito à mão** (`up`/`down` explícitos, sem snapshot nem geração pelo ORM) + teste de divergência `EntitySchema` × banco | ✅ |
 
 ---
 
@@ -141,10 +142,17 @@ Estrutura: `infrastructure/persistence/schemas/*.schema.ts` (`EntitySchema`, só
 
 Uma porta `UnitOfWork.run(fn, opts)` na camada de aplicação, implementada com `em.transactional()`. Repositórios obtêm o `EntityManager` do contexto assíncrono ambiente, então o use case não propaga `tx` por parâmetro. Isolamento **READ COMMITTED** (justificativa em [§5](#5-d3--estratégia-de-concorrência)). `SET LOCAL lock_timeout`/`statement_timeout` por transação.
 
-### 4.5 Riscos (🟡)
+### 4.5 Riscos da stack — validados no spike do M1 (✅)
 
-- **Bun × MikroORM/`pg`**: esperado funcionar; validar em spike no dia 1 (conexão, transação, `FOR UPDATE`, migrator).
-- **Bun × NestJS**: Bun não emite `design:paramtypes` (`emitDecoratorMetadata`). Mitigação adotada desde já: **toda injeção usa `@Inject(TOKEN)` explícito**, com tokens `Symbol` para portas (alinhado a ports/adapters de qualquer forma).
+Versões resolvidas: **Bun 1.4.4, NestJS 12.2, MikroORM 7.2 (`@mikro-orm/postgresql`, `migrations`), TypeScript 7.0, Biome 2.6, zod 4**. Os testes que provam cada item estão em `test/unit` e `test/integration` e rodam em `bun run test:integration`.
+
+- **Bun × NestJS**: o Bun **não emite `design:paramtypes`** (confirmado por teste). Toda injeção usa `@Inject(TOKEN)` explícito, com tokens `Symbol` para portas. O Nest 12 sobe normalmente no Bun com `platform-express`.
+- **Bun × MikroORM/`pg`**: conexão, transação, rollback, `FOR UPDATE` e `FOR UPDATE SKIP LOCKED` funcionam. Com `READ COMMITTED`, a 2ª transação bloqueada em `FOR UPDATE` enxerga o commit da 1ª (saldo `100.00 → 20.00`). `numeric(19,2)` volta como **string**, nunca `number`.
+- **Migrator (MikroORM 7)**: é uma *extensão* registrada via `extensions: [Migrator]`. As migrations entram por `migrations.migrationsList` (lista explícita `{ name, class }`), sem varredura de diretório. `up` → `down` → `up` funciona.
+- **⚠️ SQL cru dentro de transação: usar `em.execute(...)`, nunca `em.getConnection().execute(...)`.** O segundo pega outra conexão do pool e **ignora a transação**: o `FOR UPDATE` não segurava lock e o rollback não desfazia nada (o spike falhou exatamente assim antes da correção). Regra para todos os repositórios (M5): receber o `EntityManager` do contexto transacional e usar `em.execute`.
+- **TypeScript 7**: a opção `baseUrl` foi removida; o alias `@/*` usa apenas `paths` com `./`. `experimentalDecorators` continua suportado; `emitDecoratorMetadata` fica desligado.
+- **Biome 2.6** também formata Markdown; foi restrito ao código (`files.includes`) para não reescrever os documentos. `unsafeParameterDecoratorsEnabled` é necessário para `@Inject` em parâmetros de construtor.
+- **Guardas estáticas** (`test/unit/architecture.test.ts`): `src/` não pode usar `parseFloat`/`parseInt`/`Number()`/`toFixed` (AR-01; exceção explícita com `// allow-number: <motivo>`), e `src/shared/kernel` e `src/*/domain` não podem importar Nest, MikroORM, AWS SDK, `pg`, express ou zod (AR-33).
 
 ---
 
@@ -440,7 +448,17 @@ Efeito: **"toda alteração de saldo tem lançamento e vice-versa" (RF-WAL-04) �
 
 ### 8.3 Migrations (RNF-STK-07, AR-59)
 
-MikroORM `Migrator`, um arquivo por mudança, `up()` e `down()` implementados com SQL explícito (os `down` removem triggers/funções/índices antes das tabelas). CI roda `up → down → up`.
+**D15 — SQL escrito à mão (✅ decidido pelo autor).**
+
+| Opção | Prós | Contras |
+|---|---|---|
+| **SQL à mão** (escolhida) | Controle total; o schema é parte do que é avaliado e boa parte dele não é gerável por ORM (trigger de ledger append-only, constraint trigger diferido saldo = ledger, índices parciais, CHECKs compostos); diff de revisão legível; `down` sempre fiel | Mais verboso; o ORM não detecta sozinho divergência entre `EntitySchema` e banco |
+| Gerada pelo ORM a partir dos `EntitySchema` | Menos digitação nas tabelas | Triggers, constraint triggers e parte dos índices parciais/CHECKs ficam de fora e exigiriam SQL manual de qualquer forma; o schema passa a depender do gerador |
+| Híbrido | Menos digitação | Schema espalhado entre arquivos gerados e manuais; o SQL gerado pode mudar entre versões do MikroORM (7.x é recente) |
+
+Implementação: MikroORM `Migrator` com `migrations.migrationsList` explícita, **sem snapshot** (`snapshot: false`), um arquivo por mudança em `migrations/`, `up()` e `down()` com SQL explícito (os `down` removem triggers/funções/índices antes das tabelas). CI roda `up → down → up`.
+
+**Mitigação do contra:** um teste de integração (M5) compara as colunas e os tipos que cada `EntitySchema` espera com o schema real do PostgreSQL após as migrations (`information_schema`), falhando se divergirem.
 
 ### 8.4 Reconciliação e leitura do ledger
 
@@ -751,7 +769,6 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 
 ### Questões em aberto
 
-- 🟡 Spike: Bun + NestJS (DI sem `emitDecoratorMetadata`) + MikroORM/`pg` + Migrator.
 - 🟡 Parâmetros finais (lock_timeout, lease, tamanhos de lote, concorrência do consumer) após o teste de carga.
 
 ---
@@ -763,3 +780,5 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-23 | Versão inicial: decisões D1–D13, schema de referência, taxonomia de `failureCode`, mapeamento HTTP. |
 | 2026-10-23 | Decisões revisadas uma a uma com o autor e confirmadas: D1 (bigint, entrada com exatamente 2 casas), D2, D3, D4 (+ key divergente = 409), D6 (sem trigger de `version`), D7 (reversão única de qualquer tipo), D8 (10 tentativas / TTL 1h), D9, D10 (+ fila `wager-events.fifo`), D11 (síncrono, mapeamento HTTP), D12, D13 (pino + prom-client, `docker-compose.test.yml`, sem autenticação). Fechadas as duas pendências: `WIN`/`LOSS` sobre `BET` revertida são rejeitados (`REFERENCE_ALREADY_REVERSED`) e `FAILED` emite `WagerTransactionFailed`. Auth: `AuthGuard` no-op + `ProviderIdentityPort`. |
 | 2026-10-24 | D14: emulador de SQS = MiniStack (LocalStack atual exige token). Validado 10/10 em teste com o SDK real. Adicionada nota sobre lotes FIFO com várias mensagens do mesmo grupo (§11). Ambiente: Bun 1.4.4 instalado; Docker Desktop iniciado. |
+| 2026-10-24 | M1: spike da stack concluído (§4.5). Versões: NestJS 12, MikroORM 7, TypeScript 7. Achado crítico: dentro de transação usar `em.execute`, nunca `em.getConnection().execute` (este ignora a transação). Migrator via `extensions` + `migrationsList`. Guardas estáticas de AR-01 e AR-33. |
+| 2026-10-24 | D15: migrations em SQL escrito à mão, confirmadas pelo autor (antes estavam assumidas no scaffold sem consulta). Adicionado teste de divergência `EntitySchema` × banco ao M5. |

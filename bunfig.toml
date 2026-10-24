@@ -1,0 +1,3 @@
+[test]
+# Testes de integração/concorrência usam PostgreSQL e MiniStack reais; dê folga de tempo.
+timeout = 30000

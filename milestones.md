@@ -16,7 +16,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | # | Milestone | Status |
 |---|---|---|
 | M0 | Docs iniciais | [x] |
-| M1 | Scaffold e spike da stack | [ ] |
+| M1 | Scaffold e spike da stack | [x] |
 | M2 | Shared kernel: `Money` e utilitários | [ ] |
 | M3 | Domínio da Wallet e do Ledger | [ ] |
 | M4 | Domínio de Wagering, Inbox/Outbox e eventos | [ ] |
@@ -127,12 +127,12 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 
 **Entregas**
 - MikroORM configurado; `EntitySchema` + mappers (`toDomain` via `rehydrate`); `UnitOfWork` (`em.transactional`, `lock_timeout`).
-- Migrations **reversíveis** (`up`/`down`): tabelas, índices, `CHECK`s, unique de idempotência e de reversão única, trigger de ledger append-only, constraint trigger `wallet.balance = último balance_after`.
+- Migrations **reversíveis** (`up`/`down`), **SQL escrito à mão** (D15): tabelas, índices, `CHECK`s, unique de idempotência e de reversão única, trigger de ledger append-only, constraint trigger `wallet.balance = último balance_after`.
 - Repositórios: wallet (com `FOR UPDATE`), ledger, transações, inbox, outbox.
 - `ErrorClassifier` (SQLSTATE → transitório/permanente/negócio).
 - Helper de testes: banco novo por suíte + *invariant checker* (`wallet.balance == Σ ledger`, encadeamento de `balance_before/after`).
 
-**Testes (integração, PostgreSQL real):** `up → down → up`; `UPDATE`/`DELETE`/`TRUNCATE` no ledger falham; `balance < 0` falha; saldo alterado sem ledger falha no commit; ledger sem alterar saldo falha; unique de `(player_id, currency)`, de key e de `(provider, external_id)`; reversão dupla bloqueada pelo índice parcial; `numeric` volta como string (nunca `number`).
+**Testes (integração, PostgreSQL real):** `up → down → up`; `UPDATE`/`DELETE`/`TRUNCATE` no ledger falham; `balance < 0` falha; saldo alterado sem ledger falha no commit; ledger sem alterar saldo falha; unique de `(player_id, currency)`, de key e de `(provider, external_id)`; reversão dupla bloqueada pelo índice parcial; `numeric` volta como string (nunca `number`); **colunas e tipos de cada `EntitySchema` coincidem com o schema real** (`information_schema`), falhando se divergirem.
 
 **Cobre:** RNF-DB-01..03, RNF-STK-07, AR-05, AR-09, AR-59.
 **Commit:** `feat: persistência, migrations e constraints do schema`
