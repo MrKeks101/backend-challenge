@@ -65,7 +65,7 @@ Princípios que guiam todas as decisões:
 |---|---|---|---|
 | D1 | Dinheiro | `Money` com **`bigint` em centavos** (escala 2) no domínio; `numeric(19,2)` + `char(3)` no banco; string no JSON | ✅ |
 | D2 | ORM | **MikroORM** com `EntitySchema` (sem decorators), modelos de persistência **separados** do domínio e mappers via `rehydrate` | ✅ (compat. Bun validada no M1) |
-| D3 | Concorrência | **Lock pessimista** `SELECT … FOR UPDATE` na wallet + guarda `version` no `UPDATE` + `CHECK (balance >= 0)` | ✅ |
+| D3 | Concorrência | **Lock pessimista** `SELECT … FOR NO KEY UPDATE` na wallet (ver §5.2) + guarda `version` no `UPDATE` + `CHECK (balance >= 0)` | ✅ |
 | D4 | Idempotência | `INSERT … ON CONFLICT DO NOTHING` em `wager_transactions` com `UNIQUE(idempotency_key)` e `UNIQUE(provider_id, external_transaction_id)`, comparando `payload_hash` | ✅ |
 | D5 | Fluxo | Ordem fixa de aquisição: **(1) inbox → (2) claim de idempotência → (3) lock da wallet**; READ COMMITTED | ✅ |
 | D6 | Schema | Constraints, partial unique de reversão, ledger append-only por trigger, **constraint trigger diferido** `wallet.balance = último balance_after` (sem trigger de `version`) | ✅ |
@@ -173,7 +173,7 @@ Versões resolvidas: **Bun 1.4.4, NestJS 12.2, MikroORM 7.2 (`@mikro-orm/postgre
 
 **Decisão:** **A, com defesa em profundidade**:
 
-1. `SELECT … FROM wallets WHERE id = :id FOR UPDATE` (lock por linha ⇒ **por wallet**, nunca global).
+1. `SELECT … FROM wallets WHERE id = :id FOR NO KEY UPDATE` (lock por linha ⇒ **por wallet**, nunca global).
 2. `Wallet.debit/credit` aplica a regra no aggregate e devolve o `WalletLedgerEntry`.
 3. `UPDATE wallets SET balance = :b, version = :v+1, updated_at = :t WHERE id = :id AND version = :v` — se afetar 0 linhas (impossível sob lock correto), lança erro de invariante ⇒ transação aborta. É o *belt and suspenders* do optimistic locking.
 4. `CHECK (balance >= 0)` + constraint trigger de consistência ([§8](#8-d6--schema-do-banco)) como última barreira.
@@ -184,7 +184,7 @@ Versões resolvidas: **Bun 1.4.4, NestJS 12.2, MikroORM 7.2 (`@mikro-orm/postgre
 
 1. linha de inbox (apenas SQS);
 2. *claim* da linha em `wager_transactions` (insert que reserva as unique keys);
-3. lock da wallet (`FOR UPDATE`);
+3. lock da wallet (`FOR NO KEY UPDATE`, ver §5.2);
 4. demais linhas (ledger, outbox) — inserts que não conflitam.
 
 O reprocessador e o publisher respeitam a mesma ordem (o reprocessador trava a **wallet antes** de reler/travar a transação pendente; ver §10). Uma transação toca **no máximo uma wallet**, então não há ordenação entre wallets.
@@ -195,7 +195,7 @@ O reprocessador e o publisher respeitam a mesma ordem (o reprocessador trava a *
 
 ### 5.1 Contrato do aggregate `Wallet` e do `WalletLedgerEntry` (M3)
 
-O aggregate **não faz concorrência**: quem o usa já o carregou sob `FOR UPDATE`. Ele garante que, dentro de uma instância, saldo e ledger andam juntos.
+O aggregate **não faz concorrência**: quem o usa já o carregou sob `FOR NO KEY UPDATE`. Ele garante que, dentro de uma instância, saldo e ledger andam juntos.
 
 - **`debit`/`credit` devolvem o `WalletLedgerEntry`** da movimentação e são **atômicos**: tudo que pode falhar (moeda, valor positivo, saldo suficiente, estouro, criação do lançamento) é avaliado *antes* de qualquer mutação. Falhou ⇒ saldo, `version` e `updatedAt` intactos.
 - **Os ids e o horário vêm de fora** (`entryId`, `transactionId`, `at`): o domínio não gera identificadores nem lê o relógio, o que o torna determinístico em teste.
@@ -206,6 +206,14 @@ O aggregate **não faz concorrência**: quem o usa já o carregou sob `FOR UPDAT
 - **Datas (`Date` é mutável)**: entradas e saídas são copiadas; mutar a data devolvida por `createdAt`/`updatedAt` não altera o aggregate.
 - **Defesa em profundidade**: a checagem de moeda do movimento é redundante com `Money` e o ledger, de propósito (falha cedo com a moeda da wallet).
 - **Prova por mutação**: 21 bugs plantados nesses arquivos; 20 detectados e 1 mutante equivalente (a checagem de moeda acima).
+
+### 5.2 Achado do M5: `FOR NO KEY UPDATE`, não `FOR UPDATE` (✅ revisão do D3)
+
+**O problema, reproduzido por teste.** No fluxo do D4 a transação primeiro faz o *claim* (`INSERT` em `wager_transactions`) e só depois trava a wallet. O `INSERT` tem FK para `wallets`, e o PostgreSQL protege a linha referenciada com um `FOR KEY SHARE`. Com `SELECT … FOR UPDATE` na wallet, duas transações da **mesma** wallet entram em deadlock: cada uma segura o `KEY SHARE` da própria FK e pede `FOR UPDATE`, que conflita com o `KEY SHARE` da outra. O teste de 20 apostas paralelas na mesma wallet falhou com `deadlock detected` (SQLSTATE `40P01`) na primeira execução.
+
+**A correção.** `SELECT … FOR NO KEY UPDATE`: serializa duas transações pela wallet exatamente como antes (conflita com ele mesmo), mas **não conflita com `KEY SHARE`**, então as FKs dos filhos (transação, ledger) nunca bloqueiam nem criam ciclo. O `UPDATE wallets SET balance…` já pede esse nível internamente, então não há "upgrade" de lock. A ordem do D4 (inbox → claim → wallet) fica **mantida**, sem precisar inverter para "wallet primeiro".
+
+**Guarda.** `test/unit/architecture.test.ts` falha o build se qualquer SQL em `src/` usar `FOR UPDATE` sem `SKIP LOCKED`. Os `claimDue` também usam `FOR NO KEY UPDATE SKIP LOCKED` (transações) pelo mesmo motivo (o ledger tem FK para elas).
 
 ---
 
@@ -286,7 +294,7 @@ BEGIN
         └ sem linha → SELECT existente → replay | 409                                  (dedup #2/#3)
         └ replay: COMMIT (se houve inbox) e devolve resultado original
 
-  [2] SELECT … FROM wallets WHERE id = :walletId FOR UPDATE                             (serializa a wallet)
+  [2] SELECT … FROM wallets WHERE id = :walletId FOR NO KEY UPDATE                          (serializa a wallet)
 
   [3] Se houver referência: SELECT da transação de referência por (provider_id, reference_external_transaction_id)
 
@@ -483,6 +491,20 @@ Implementação: MikroORM `Migrator` com `migrations.migrationsList` explícita,
 
 - `POST /wallets/:id/reconciliation` roda numa transação `REPEATABLE READ READ ONLY` (um snapshot único, sem lock): `storedBalance` = `wallets.balance`; `calculatedBalance` = `Σ(CREDIT) − Σ(DEBIT)`; `checkedEntries` = contagem; verifica também o encadeamento (`balance_before` de cada entrada = `balance_after` da anterior). Divergência ⇒ `consistent:false`, log `ERROR`, métrica `reconciliation_divergences_total`; **nunca corrige** (AR-42). Retorna 200 com o corpo descrevendo o resultado.
 - Paginação do ledger: cursor opaco = base64url de `{seq}` (+ versão do formato); `WHERE wallet_id = :w AND seq < :cursor ORDER BY seq DESC LIMIT :n`. Como as inserções de uma wallet são serializadas pelo lock, `seq` cresce em ordem de commit dentro da wallet ⇒ cursor estável, sem pular nem repetir. `limit` padrão 50, máximo 200.
+
+### 8.5 Contrato da camada de persistência (M5)
+
+- **Fonte única do schema no código: `TableDef`** (`shared/infrastructure/persistence/table-def.ts`). Cada tabela é declarada uma vez (`tables.ts` do contexto) e dela saem: a lista de colunas dos `SELECT` (`selectList`), o `INSERT` parametrizado (`insertStatement`), o `EntitySchema` do MikroORM (`toEntitySchema`) e o teste de divergência. O DDL continua sendo SQL à mão (D15); o teste compara colunas, tipos, `NULL`, `char(n)`, `numeric(p,s)` e identity de **cada** `TableDef` com `information_schema` e falha se divergirem.
+- **Repositórios usam SQL explícito via `em.execute`** do `EntityManager` da transação em curso (§4.5). Todo valor vai como parâmetro (`?`); só nomes de tabela/coluna vêm de constantes. Uma guarda estática proíbe `getConnection()`.
+- **`timestamptz` volta como texto do driver** (`2026-10-24 05:09:10.663757+00`), não como `Date`: `fetchRecords` coage as colunas `timestamptz` pelo `TableDef` (precisão de ms; o app só grava ms). `numeric` e `bigint` ficam `string`; `jsonb` volta como objeto. Achado do primeiro teste de integração real.
+- **`UnitOfWork`** (`run`): `READ COMMITTED`, `SET LOCAL lock_timeout` (padrão 5 s) e `statement_timeout` (15 s) por transação, e chamada aninhada **entra** na transação em curso. Guarda o `EntityManager` num `AsyncLocalStorage` próprio. `requireTransaction` impede `FOR UPDATE`/`SKIP LOCKED` fora de transação.
+- **Escritas condicionais** (`WHERE version = ?`, `WHERE status IN ('PENDING','PENDING_REFERENCE')`, `WHERE published_at IS NULL`, `WHERE processed_at IS NULL`) com `RETURNING`: zero linhas ⇒ `OptimisticLockError` (transitório). O banco, e não só o domínio, recusa reescrever uma transação terminal.
+- **Idempotência**: `claim`, `Inbox.tryReceive` e `Wallet.insert` usam `INSERT … ON CONFLICT DO NOTHING RETURNING` (`true` = esta chamada criou; `false` = já existia). O `claim` não nomeia o alvo do conflito, pois deve cobrir a key **e** `(provider, externalId)`; quem recebe `false` consulta qual das duas colidiu.
+- **Workers** (`claimDue`): `UPDATE … WHERE id IN (SELECT … FOR … SKIP LOCKED) RETURNING`, empurrando `next_attempt_at` para `now + lease`. O relógio é injetado (`now`), não `now()` do banco, para o teste ser determinístico. Vencimento inclusivo (`<=`). Uma reivindicação desfeita por rollback não consome o lease. O `claimDue` do outbox ordena por `(occurred_at, id)`; **garantir a ordem por grupo FIFO ao publicar é responsabilidade do publisher (M9)**, pois uma mensagem adiada por retry pode ser ultrapassada por outra do mesmo grupo.
+- **`ErrorClassifier`** (`classifyError`): `DomainError` ⇒ `BUSINESS`; `OptimisticLockError`, SQLSTATE `40001/40P01/55P03/57014/57P0x/53xxx`, classe `08` e erros de rede ⇒ `TRANSIENT`; o resto (integridade `23xxx`, dado inválido `22xxx`, SQL inválido `42xxx`, desconhecido) ⇒ `PERMANENT`. Procura o código nas causas encadeadas e **nunca copia a mensagem original** (pode ter dados do jogador).
+- **Invariant checker** (`test/support/database.ts`): saldo ≥ 0; saldo = `balance_after` do último lançamento = Σ(créditos − débitos); encadeamento `balance_before = balance_after` anterior; lançamento só de transação `PROCESSED`; toda `PROCESSED` que move saldo tem lançamento e `LOSS` não tem; reversão única. Tem suíte própria, que corrompe o banco desligando os triggers para provar que ele acusa.
+- **Banco por suíte**: `createTestDatabase()` cria um banco novo e aplica as migrations (o ledger nem aceita `TRUNCATE`). `constraints.test.ts` insere linhas sintéticas direto em SQL para provar cada constraint e, por isso, não roda o checker global.
+- **Prova por mutação**: 55 bugs plantados (SQL dos repositórios, locks, migrations, Unit of Work, classificador, coerção de datas, mapeadores); 53 morreram de primeira e 2 sobreviveram por testes fracos (um CHECK que falhava antes do CHECK testado, e um filtro de status nunca exercitado). Os testes foram corrigidos e os 55 estão mortos.
 
 ---
 
@@ -817,3 +839,4 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-24 | M2: `Money` (bigint em centavos, congelado), erros de domínio com `code`, `Clock`, `IdGenerator` (UUIDv7), JSON canônico e `sha256`. Decisões de detalhe: `equals` entre moedas diferentes é `false`; canonicalização rejeita `undefined`. |
 | 2026-10-24 | M3: domínio da `Wallet` e do `WalletLedgerEntry` (§5.1). Adaptação: `Wallet.open` devolve `{ wallet, openingEntry }`. Kernel ganhou `InvalidArgumentError`, `requireText` e `requireDate`. |
 | 2026-10-24 | M4: domínio de Wagering (§9.4), eventos de integração, `InboxMessage`/`OutboxMessage`. Kernel ganhou `backoff`, `plain-json` e `IntegrationEvent`. Detalhes decididos: ordem das verificações da política, `providerActionFor`, TTL inclusivo. |
+| 2026-10-24 | M5: persistência (§8.5). `TableDef` como fonte única de schema; migrations SQL à mão (tabelas + triggers); repositórios, `UnitOfWork`, `ErrorClassifier`, invariant checker. **Revisão do D3 (§5.2):** `FOR NO KEY UPDATE` no lugar de `FOR UPDATE`, após deadlock real entre o `KEY SHARE` das FKs e o lock da wallet. Achado: `em.execute` devolve `timestamptz` como texto. |

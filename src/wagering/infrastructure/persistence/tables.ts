@@ -1,0 +1,30 @@
+import { defineTable, money } from "../../../shared/infrastructure/persistence/table-def";
+
+export const wagerTransactionsTable = defineTable("wager_transactions", "WagerTransactionRecord", {
+  id: { column: "id", type: "uuid", primary: true },
+  providerId: { column: "provider_id", type: "text" },
+  externalTransactionId: { column: "external_transaction_id", type: "text" },
+  idempotencyKey: { column: "idempotency_key", type: "text" },
+  payloadHash: { column: "payload_hash", type: "char", length: 64 },
+  walletId: { column: "wallet_id", type: "uuid" },
+  playerId: { column: "player_id", type: "uuid" },
+  roundId: { column: "round_id", type: "text" },
+  gameId: { column: "game_id", type: "text" },
+  kind: { column: "kind", type: "text" },
+  amount: money("amount"),
+  currency: { column: "currency", type: "char", length: 3 },
+  referenceExternalTransactionId: {
+    column: "reference_external_transaction_id",
+    type: "text",
+    nullable: true,
+  },
+  referenceTransactionId: { column: "reference_transaction_id", type: "uuid", nullable: true },
+  status: { column: "status", type: "text" },
+  failureCode: { column: "failure_code", type: "text", nullable: true },
+  observedBalance: money("observed_balance", { nullable: true }),
+  attempts: { column: "attempts", type: "integer" },
+  nextAttemptAt: { column: "next_attempt_at", type: "timestamptz", nullable: true },
+  createdAt: { column: "created_at", type: "timestamptz" },
+  processedAt: { column: "processed_at", type: "timestamptz", nullable: true },
+  updatedAt: { column: "updated_at", type: "timestamptz" },
+});

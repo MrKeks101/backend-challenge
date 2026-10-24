@@ -2,9 +2,7 @@
  * Executa as migrations. Uso: `bun run migration:up` / `bun run migration:down`.
  * Lê DATABASE_URL do ambiente (o Bun carrega o .env automaticamente).
  */
-import { Migrator } from "@mikro-orm/migrations";
-import { MikroORM } from "@mikro-orm/postgresql";
-import { migrationsList } from "../migrations";
+import { createOrm } from "../src/database/orm";
 import { loadEnv } from "../src/shared/infrastructure/config/env";
 
 const direction = process.argv[2];
@@ -13,15 +11,7 @@ if (direction !== "up" && direction !== "down") {
   process.exit(2);
 }
 
-const env = loadEnv();
-const orm = await MikroORM.init({
-  clientUrl: env.DATABASE_URL,
-  entities: [],
-  extensions: [Migrator],
-  // Migrations são SQL escrito à mão: sem snapshot de schema (.snapshot-*.json).
-  migrations: { migrationsList, transactional: true, allOrNothing: true, snapshot: false },
-  discovery: { warnWhenNoEntities: false },
-});
+const orm = await createOrm(loadEnv().DATABASE_URL, { poolMax: 2 });
 
 try {
   const executed = direction === "up" ? await orm.migrator.up() : await orm.migrator.down();

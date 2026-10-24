@@ -20,7 +20,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | M2 | Shared kernel: `Money` e utilitários | [x] |
 | M3 | Domínio da Wallet e do Ledger | [x] |
 | M4 | Domínio de Wagering, Inbox/Outbox e eventos | [x] |
-| M5 | Persistência: migrations, schema e repositórios | [ ] |
+| M5 | Persistência: migrations, schema e repositórios | [x] |
 | M6 | Wallets: casos de uso e API HTTP | [ ] |
 | M7 | Processamento de transações via HTTP (idempotência e concorrência) | [ ] |
 | M8 | Outbox publisher e SQS de saída | [ ] |
