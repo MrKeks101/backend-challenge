@@ -543,6 +543,19 @@ Erros **não persistidos** (a transação nem chega a existir): `INVALID_PAYLOAD
 
 `FAILED` é gravado numa transação própria e idempotente (best-effort) pelo consumidor antes de enviar à DLQ, apenas quando o payload é válido e a wallet existe.
 
+### 9.4 Contrato do domínio de Wagering, eventos e mensageria (M4)
+
+- **`WagerTransaction`**: nasce `PENDING`; `markProcessed`, `markPendingReference`, `reject` e `fail` seguem a tabela de transições (§9.1) e lançam `InvalidTransactionStateError` a partir de estados terminais. `reject` só aceita códigos de rejeição e `fail` só códigos técnicos (`REJECTION_CODES`/`FAILURE_CODES` particionam a taxonomia). `OPENING` só nasce por `createOpening` (provedor `internal`, `externalTransactionId = walletId`); `create` o recusa.
+- **`payloadHash`** (SHA-256 do JSON canônico) é calculado no `create` e **não** é recalculado no `rehydrate`. Metadados (key, ids, datas) ficam fora do hash.
+- **`decideWagerOutcome`** (política pura, sem I/O) recebe transação, wallet sob lock, referência já resolvida e o fato `referenceAlreadyReversed`; devolve `PROCESSED{direction|null}`, `REJECTED{code}` ou `PENDING_REFERENCE`. **Ordem das verificações**: jogador × wallet → moeda → fatos estáticos da referência (provedor, jogador, wallet, moeda, rodada) → tipo permitido → status da referência (em espera / não processada) → valor igual → já estornada → saldo. Fatos estáticos vêm **antes** do status porque uma referência errada não "melhora" esperando.
+- **Rejeição por saldo**: `BET` sem saldo ⇒ `INSUFFICIENT_FUNDS`; reversão que debitaria além do saldo ⇒ `REVERSAL_WOULD_OVERDRAW`.
+- **Tipos aceitos como referência**: `REFUND` → `BET`; `ROLLBACK` → `BET`/`WIN`/`REFUND`; `WIN`/`LOSS` (referência opcional) → `BET`.
+- **`providerActionFor(code)`** mapeia cada `failureCode` à ação esperada do provedor (reenviar, corrigir payload, desistir, resolução manual), para a documentação de contrato (M11).
+- **Eventos** (`IntegrationEvent<T>`): `eventType` e `version` fixados na subclasse; `data` é JSON puro (validado por `assertPlainJson`, dinheiro como `MoneyProps`, datas ISO), copiado e congelado. Cada evento é construído por `from(...)` e exige que a transação já esteja no estado que ele descreve; `WalletBalanceChanged.from` confere que o lançamento pertence à wallet e que `balanceAfter` é o saldo dela.
+- **`pending-reference-policy`**: padrão de 10 tentativas, backoff 2 s·2ⁿ com teto de 5 min, TTL 1 h (limite de TTL inclusivo). O jitter é injetado, o que mantém a função determinística.
+- **`InboxMessage`**: `markProcessed` uma única vez. **`OutboxMessage`**: o `eventId` é o id; nasce vencida no instante do evento; `nextAttemptAt` serve de vencimento e de lease; `scheduleRetry` usa backoff de 1 s até 5 min; publicada não volta à fila.
+- **Prova por mutação**: 32 bugs plantados no domínio novo; os 32 foram detectados.
+
 ---
 
 ## 10. D8 — Referências fora de ordem (reprocessador)
@@ -803,3 +816,4 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-24 | D15: migrations em SQL escrito à mão, confirmadas pelo autor (antes estavam assumidas no scaffold sem consulta). Adicionado teste de divergência `EntitySchema` × banco ao M5. |
 | 2026-10-24 | M2: `Money` (bigint em centavos, congelado), erros de domínio com `code`, `Clock`, `IdGenerator` (UUIDv7), JSON canônico e `sha256`. Decisões de detalhe: `equals` entre moedas diferentes é `false`; canonicalização rejeita `undefined`. |
 | 2026-10-24 | M3: domínio da `Wallet` e do `WalletLedgerEntry` (§5.1). Adaptação: `Wallet.open` devolve `{ wallet, openingEntry }`. Kernel ganhou `InvalidArgumentError`, `requireText` e `requireDate`. |
+| 2026-10-24 | M4: domínio de Wagering (§9.4), eventos de integração, `InboxMessage`/`OutboxMessage`. Kernel ganhou `backoff`, `plain-json` e `IntegrationEvent`. Detalhes decididos: ordem das verificações da política, `providerActionFor`, TTL inclusivo. |
