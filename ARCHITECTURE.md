@@ -100,6 +100,10 @@ Princípios que guiam todas as decisões:
 - Teto: `≤ 9_999_999_999_999_999.99` (limite de `numeric(19,2)`).
 - Valores negativos só existem como resultado interno de `negate()`/`subtract()`; `Money.from` (contrato de entrada) nunca os aceita. `Wallet` nunca persiste saldo negativo.
 - Serialização: `toJSON() → { amount: "25.00", currency: "BRL" }`; `toString() → "25.00 BRL"`.
+- **Implementação (M2):** `Money` guarda `minor: bigint` e é congelado (`Object.freeze`), então a imutabilidade é estrutural e testada. Intervalo `±9_999_999_999_999_999.99` (`MoneyOverflowError` fora dele, inclusive em `add`/`subtract`). `amount` que não seja `string` em runtime (p.ex. `number`) é rejeitado mesmo que o tipo TS seja burlado. Moeda validada só pelo formato ISO-4217 (3 letras maiúsculas), sem lista oficial.
+- **`equals` entre moedas diferentes devolve `false`** (igualdade de valor, não lança); já `add`, `subtract` e `isLessThan` lançam `CurrencyMismatchError`.
+- **Mensagens de erro não repetem o valor recebido** (AR-55); só descrevem o motivo.
+- Todo erro de domínio estende `DomainError` e carrega um `code` estável (`INVALID_MONEY`, `MONEY_OVERFLOW`, `CURRENCY_MISMATCH`, `INVALID_TRANSACTION_STATE`).
 - Conflito de moeda em qualquer operação binária → `CurrencyMismatchError`.
 
 **Valor zero.** `BET`, `WIN`, `REFUND`, `ROLLBACK` exigem `amount > 0`. `LOSS` aceita `0.00` (não move saldo). Ledger exige `amount > 0`. Ver [§16](#16-interpretações-adotadas-limitações-e-questões-em-aberto).
@@ -234,6 +238,7 @@ RETURNING id;
 
   (as chaves acima aparecem agrupadas só para leitura; na prática `money` é objeto aninhado `{amount,currency}` ordenado.)
 - **Fora do hash:** header `Idempotency-Key`, `messageId`, `occurredAt`, `correlationId`, qualquer metadado de transporte (AR-39).
+- **JSON canônico (`canonicalize`, M2):** sem espaços; chaves ordenadas por unidade de código UTF-16 em todos os níveis; arrays mantêm a ordem; strings como em `JSON.stringify`; objetos com `toJSON()` (`Money`, `Date`) são convertidos por ele. **Rejeita** (`TypeError` com o caminho do valor) `undefined`, `NaN`, `Infinity`, `bigint`, função, símbolo e instâncias de classe sem `toJSON`: um campo ausente precisa ser escrito como `null` explícito pelo chamador, para que "ausente" e "nulo" nunca colidam no hash por acidente.
 - Como `Money` já é normalizado, `"25.00"` tem uma única forma textual.
 - A implementação vive no domínio (`WagerTransaction.create` calcula e `matchesPayload` compara) usando uma função pura de canonicalização; `crypto` do Bun/Node apenas para o SHA-256.
 
@@ -782,3 +787,4 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-24 | D14: emulador de SQS = MiniStack (LocalStack atual exige token). Validado 10/10 em teste com o SDK real. Adicionada nota sobre lotes FIFO com várias mensagens do mesmo grupo (§11). Ambiente: Bun 1.4.4 instalado; Docker Desktop iniciado. |
 | 2026-10-24 | M1: spike da stack concluído (§4.5). Versões: NestJS 12, MikroORM 7, TypeScript 7. Achado crítico: dentro de transação usar `em.execute`, nunca `em.getConnection().execute` (este ignora a transação). Migrator via `extensions` + `migrationsList`. Guardas estáticas de AR-01 e AR-33. |
 | 2026-10-24 | D15: migrations em SQL escrito à mão, confirmadas pelo autor (antes estavam assumidas no scaffold sem consulta). Adicionado teste de divergência `EntitySchema` × banco ao M5. |
+| 2026-10-24 | M2: `Money` (bigint em centavos, congelado), erros de domínio com `code`, `Clock`, `IdGenerator` (UUIDv7), JSON canônico e `sha256`. Decisões de detalhe: `equals` entre moedas diferentes é `false`; canonicalização rejeita `undefined`. |
