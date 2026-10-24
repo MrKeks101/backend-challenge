@@ -193,6 +193,20 @@ O reprocessador e o publisher respeitam a mesma ordem (o reprocessador trava a *
 
 **Hot wallet.** A vazão por wallet é limitada por *tempo de transação*. Mitigação: transação curta (sem I/O de rede dentro dela; o outbox só grava linhas), índices certos, pool dimensionado. Limitação documentada em [§16](#16-interpretações-adotadas-limitações-e-questões-em-aberto).
 
+### 5.1 Contrato do aggregate `Wallet` e do `WalletLedgerEntry` (M3)
+
+O aggregate **não faz concorrência**: quem o usa já o carregou sob `FOR UPDATE`. Ele garante que, dentro de uma instância, saldo e ledger andam juntos.
+
+- **`debit`/`credit` devolvem o `WalletLedgerEntry`** da movimentação e são **atômicos**: tudo que pode falhar (moeda, valor positivo, saldo suficiente, estouro, criação do lançamento) é avaliado *antes* de qualquer mutação. Falhou ⇒ saldo, `version` e `updatedAt` intactos.
+- **Os ids e o horário vêm de fora** (`entryId`, `transactionId`, `at`): o domínio não gera identificadores nem lê o relógio, o que o torna determinístico em teste.
+- **`Wallet.open` devolve `{ wallet, openingEntry }`** (adaptação da assinatura do README, que devolvia só a wallet): com saldo inicial positivo, o lançamento `CREDIT` de abertura (`balanceBefore = 0`) nasce junto da wallet, então saldo e ledger já nascem consistentes. A wallet abre direto com `balance = initialBalance` e `version = 1` (não passa por `version = 2`). Com saldo zero, `openingEntry` é `null`. Saldo inicial positivo sem os ids de abertura é erro.
+- **`version`** começa em 1 e sobe exatamente 1 por movimentação bem-sucedida; falhas não sobem.
+- **Todo movimento é estritamente positivo** (`> 0`); o sentido vem de `debit` × `credit`. Saldo nunca fica negativo: `InsufficientFundsError` (`INSUFFICIENT_FUNDS`) em vez de negativar.
+- **`WalletLedgerEntry` é imutável de forma estrutural**: campos `readonly`, instância congelada (`Object.freeze`), nenhum método de transição nem setter; só existem `create` (valida a aritmética `balanceBefore ± money = balanceAfter`, valor positivo, saldos não negativos e moedas coerentes) e `rehydrate` (não revalida). `isBalanced()` devolve `false`, sem lançar, para estado reidratado incoerente.
+- **Datas (`Date` é mutável)**: entradas e saídas são copiadas; mutar a data devolvida por `createdAt`/`updatedAt` não altera o aggregate.
+- **Defesa em profundidade**: a checagem de moeda do movimento é redundante com `Money` e o ledger, de propósito (falha cedo com a moeda da wallet).
+- **Prova por mutação**: 21 bugs plantados nesses arquivos; 20 detectados e 1 mutante equivalente (a checagem de moeda acima).
+
 ---
 
 ## 6. D4 — Idempotência
@@ -788,3 +802,4 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-24 | M1: spike da stack concluído (§4.5). Versões: NestJS 12, MikroORM 7, TypeScript 7. Achado crítico: dentro de transação usar `em.execute`, nunca `em.getConnection().execute` (este ignora a transação). Migrator via `extensions` + `migrationsList`. Guardas estáticas de AR-01 e AR-33. |
 | 2026-10-24 | D15: migrations em SQL escrito à mão, confirmadas pelo autor (antes estavam assumidas no scaffold sem consulta). Adicionado teste de divergência `EntitySchema` × banco ao M5. |
 | 2026-10-24 | M2: `Money` (bigint em centavos, congelado), erros de domínio com `code`, `Clock`, `IdGenerator` (UUIDv7), JSON canônico e `sha256`. Decisões de detalhe: `equals` entre moedas diferentes é `false`; canonicalização rejeita `undefined`. |
+| 2026-10-24 | M3: domínio da `Wallet` e do `WalletLedgerEntry` (§5.1). Adaptação: `Wallet.open` devolve `{ wallet, openingEntry }`. Kernel ganhou `InvalidArgumentError`, `requireText` e `requireDate`. |

@@ -34,6 +34,11 @@ export class CurrencyMismatchError extends DomainError {
   }
 }
 
+/** Argumento obrigatório ausente ou malformado (id vazio, data inválida...). */
+export class InvalidArgumentError extends DomainError {
+  readonly code = "INVALID_ARGUMENT";
+}
+
 /** Transição de estado inválida (p.ex. mexer em transação já terminal). É erro de programação. */
 export class InvalidTransactionStateError extends DomainError {
   readonly code = "INVALID_TRANSACTION_STATE";

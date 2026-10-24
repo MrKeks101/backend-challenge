@@ -3,10 +3,12 @@ export { type Clock, SystemClock } from "./clock";
 export {
   CurrencyMismatchError,
   DomainError,
+  InvalidArgumentError,
   InvalidMoneyError,
   InvalidTransactionStateError,
   MoneyOverflowError,
 } from "./errors";
+export { requireDate, requireText } from "./guards";
 export { hashCanonical, sha256Hex } from "./hash";
 export { type IdGenerator, isUuid, Uuid7Generator } from "./id-generator";
 export { Money, type MoneyProps } from "./money";

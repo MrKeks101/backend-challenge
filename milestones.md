@@ -18,7 +18,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | M0 | Docs iniciais | [x] |
 | M1 | Scaffold e spike da stack | [x] |
 | M2 | Shared kernel: `Money` e utilitários | [x] |
-| M3 | Domínio da Wallet e do Ledger | [ ] |
+| M3 | Domínio da Wallet e do Ledger | [x] |
 | M4 | Domínio de Wagering, Inbox/Outbox e eventos | [ ] |
 | M5 | Persistência: migrations, schema e repositórios | [ ] |
 | M6 | Wallets: casos de uso e API HTTP | [ ] |
