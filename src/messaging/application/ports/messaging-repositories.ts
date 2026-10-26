@@ -26,4 +26,6 @@ export interface OutboxRepository {
   markPublished(message: OutboxMessage): Promise<void>;
   /** Grava `attempts`, `nextAttemptAt` e `lastError` de uma mensagem ainda não publicada. */
   saveRetry(message: OutboxMessage): Promise<void>;
+  /** Mensagens ainda não publicadas e `occurredAt` da mais antiga (métricas `outbox_*`). */
+  backlog(): Promise<{ pending: number; oldestOccurredAt: Date | null }>;
 }

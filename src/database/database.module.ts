@@ -3,6 +3,7 @@ import { Inject, Module, type OnApplicationShutdown } from "@nestjs/common";
 import { UNIT_OF_WORK } from "../shared/application/unit-of-work";
 import { ENV } from "../shared/infrastructure/config/config.module";
 import type { Env } from "../shared/infrastructure/config/env";
+import { APP_METRICS, type AppMetrics } from "../shared/infrastructure/metrics/metrics";
 import {
   MIKRO_ORM,
   MikroOrmUnitOfWork,
@@ -16,8 +17,11 @@ import { createOrm } from "./orm";
     { provide: MIKRO_ORM, inject: [ENV], useFactory: (env: Env) => createOrm(env.DATABASE_URL) },
     {
       provide: UNIT_OF_WORK_IMPL,
-      inject: [MIKRO_ORM],
-      useFactory: (orm: MikroORM) => new MikroOrmUnitOfWork(orm),
+      inject: [MIKRO_ORM, APP_METRICS],
+      useFactory: (orm: MikroORM, metrics: AppMetrics) =>
+        new MikroOrmUnitOfWork(orm, {
+          lockConflict: (reason) => metrics.lockConflicts.inc({ reason }),
+        }),
     },
     { provide: UNIT_OF_WORK, useExisting: UNIT_OF_WORK_IMPL },
   ],

@@ -1,8 +1,11 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
+import { RequestContext } from "../../shared/application/request-context";
 import { CLOCK } from "../../shared/application/tokens";
 import { UNIT_OF_WORK, type UnitOfWork } from "../../shared/application/unit-of-work";
 import { classifyError } from "../../shared/infrastructure/persistence/error-classifier";
 import type { Clock } from "../../shared/kernel";
+import type { WagerTransaction } from "../domain";
+import { WAGER_METRICS, type WagerMetrics } from "./ports/wager-metrics";
 import {
   WAGER_TRANSACTION_REPOSITORY,
   type WagerTransactionRepository,
@@ -54,6 +57,7 @@ export class PendingReferenceReprocessor {
     private readonly reprocess: ReprocessPendingTransactionUseCase,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(REPROCESSOR_CONFIG) private readonly config: ReprocessorConfig,
+    @Inject(WAGER_METRICS) private readonly metrics: WagerMetrics,
   ) {}
 
   async runOnce(): Promise<ReprocessCycleResult> {
@@ -67,21 +71,40 @@ export class PendingReferenceReprocessor {
       results: emptyResults(),
     };
     for (const transaction of claimed) {
-      try {
-        const outcome = await this.reprocess.execute(transaction.id, {
-          correlationId: `reprocessor:${transaction.id}`,
-        });
-        result.results[outcome]++;
-      } catch (error) {
-        result.failed++;
-        // Sem retry aqui: o lease vence e o próximo ciclo (ou outra instância) tenta de novo.
-        this.logger.warn({
-          event: "reprocess_failed",
-          transactionId: transaction.id,
-          reason: classifyError(error).reason,
-        });
-      }
+      // Cada item tem o seu contexto de log: o laço de fundo não nasce de uma requisição.
+      await RequestContext.run(contextOf(transaction), async () => {
+        const started = performance.now();
+        try {
+          const outcome = await this.reprocess.execute(transaction.id, {
+            correlationId: `reprocessor:${transaction.id}`,
+          });
+          result.results[outcome]++;
+          this.record(outcome, transaction, (performance.now() - started) / 1000);
+        } catch (error) {
+          result.failed++;
+          // Sem retry aqui: o lease vence e o próximo ciclo (ou outra instância) tenta de novo.
+          this.logger.warn({ event: "reprocess_failed", reason: classifyError(error).reason });
+        }
+      });
     }
     return result;
   }
+
+  /** Só depois do commit do item. `NOOP` não é trabalho: outra instância já resolveu. */
+  private record(outcome: ReprocessResult, transaction: WagerTransaction, seconds: number): void {
+    if (outcome === "NOOP") return;
+    if (outcome === "STILL_PENDING") this.metrics.retry("reference_wait");
+    else {
+      const status = outcome === "PROCESSED" ? "PROCESSED" : "REJECTED";
+      this.metrics.transactionResolved(status, transaction.kind);
+    }
+    this.metrics.observeProcessing("reprocessor", seconds);
+  }
 }
+
+const contextOf = (transaction: WagerTransaction) => ({
+  correlationId: `reprocessor:${transaction.id}`,
+  transactionId: transaction.id,
+  walletId: transaction.walletId,
+  providerId: transaction.providerId,
+});

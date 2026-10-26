@@ -16,6 +16,7 @@ import {
   PENDING_REFERENCE_SETTINGS,
   type PendingReferenceSettings,
 } from "./pending-reference-settings";
+import { WAGER_METRICS, type WagerMetrics } from "./ports/wager-metrics";
 import {
   WAGER_TRANSACTION_REPOSITORY,
   type WagerTransactionRepository,
@@ -49,6 +50,7 @@ export class ReprocessPendingTransactionUseCase {
     @Inject(WagerOutcomeApplier) private readonly applier: WagerOutcomeApplier,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(PENDING_REFERENCE_SETTINGS) private readonly pending: PendingReferenceSettings,
+    @Inject(WAGER_METRICS) private readonly metrics: WagerMetrics,
   ) {}
 
   async execute(
@@ -68,7 +70,9 @@ export class ReprocessPendingTransactionUseCase {
     walletId: string,
     context: { correlationId: string },
   ): Promise<ReprocessResult> {
-    const wallet = await this.wallets.findByIdForUpdate(walletId);
+    const wallet = await this.metrics.measureWalletLock(() =>
+      this.wallets.findByIdForUpdate(walletId),
+    );
     if (!wallet) return "NOOP";
 
     // Relida sob o lock da wallet: quem a resolveu antes de nós já commitou.

@@ -20,6 +20,7 @@ import type {
   WalletRepository,
 } from "../../src/wallet/application/ports/wallet-repositories";
 import { Wallet, type WalletLedgerEntry } from "../../src/wallet/domain";
+import { makeMetrics } from "./metrics";
 import { brl } from "./money";
 import { T0 } from "./wagering";
 
@@ -247,6 +248,14 @@ class InMemoryOutbox implements OutboxRepository {
   async saveRetry(): Promise<never> {
     throw new Error("not used");
   }
+  async backlog() {
+    const unpublished = this.messages.filter((m) => m.publishedAt === undefined);
+    const oldest = unpublished.map((m) => m.occurredAt.getTime()).sort((a, b) => a - b)[0];
+    return {
+      pending: unpublished.length,
+      oldestOccurredAt: oldest === undefined ? null : new Date(oldest),
+    };
+  }
 }
 
 /** Transações do UoW em memória: uma de cada vez (como se a wallet inteira fosse travada). */
@@ -277,6 +286,7 @@ export class InMemoryWorld {
   readonly wallets = new InMemoryWallets();
   readonly ledger = new InMemoryLedger();
   readonly outbox = new InMemoryOutbox();
+  readonly metrics = makeMetrics();
   readonly settings: PendingReferenceSettings;
 
   constructor(private readonly options: WorldOptions = {}) {
@@ -313,6 +323,7 @@ export class InMemoryWorld {
       applier,
       this.clock,
       this.ids,
+      this.metrics.wager,
     );
     const reprocess = new ReprocessPendingTransactionUseCase(
       this.uow,
@@ -321,6 +332,7 @@ export class InMemoryWorld {
       applier,
       this.clock,
       this.settings,
+      this.metrics.wager,
     );
     const reprocessor = new PendingReferenceReprocessor(
       this.uow,
@@ -328,6 +340,7 @@ export class InMemoryWorld {
       reprocess,
       this.clock,
       { batchSize: this.options.batchSize ?? 20, leaseMs: this.options.leaseMs ?? 60_000 },
+      this.metrics.wager,
     );
     return { applier, process, reprocess, reprocessor };
   }

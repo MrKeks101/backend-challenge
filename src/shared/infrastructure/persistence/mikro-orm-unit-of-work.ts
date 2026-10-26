@@ -4,13 +4,18 @@ import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import type { UnitOfWork, UnitOfWorkOptions } from "../../application/unit-of-work";
 import { type BackoffConfig, backoffDelayMs, InvalidArgumentError } from "../../kernel";
 import { classifyError } from "./error-classifier";
-import { NoTransactionError } from "./errors";
+import { NoTransactionError, OptimisticLockError } from "./errors";
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_STATEMENT_TIMEOUT_MS = 15_000;
 
 interface Ambient {
   em: EntityManager;
+}
+
+/** Quem é avisado a cada transação desfeita por conflito de concorrência (métrica `lock_conflicts_total`). */
+export interface LockConflictReporter {
+  lockConflict(reason: string): void;
 }
 
 const CONFLICT_BACKOFF: BackoffConfig = { baseMs: 20, capMs: 200 };
@@ -21,6 +26,16 @@ const isConflictAbort = (error: unknown): boolean => {
   const { sqlState } = classifyError(error);
   return sqlState !== undefined && CONFLICT_STATES.has(sqlState);
 };
+
+/** Motivo de métrica para um erro de concorrência; `undefined` se o erro não é desse tipo. */
+function conflictReason(error: unknown): string | undefined {
+  if (error instanceof OptimisticLockError) return "optimistic_lock";
+  const { sqlState, reason } = classifyError(error);
+  // 55P03: o `lock_timeout` estourou (alguém segurou o lock por mais de 5 s).
+  return sqlState !== undefined && (CONFLICT_STATES.has(sqlState) || sqlState === "55P03")
+    ? reason
+    : undefined;
+}
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -39,7 +54,10 @@ function positiveInt(value: number, name: string): number {
 export class MikroOrmUnitOfWork implements UnitOfWork {
   private readonly storage = new AsyncLocalStorage<Ambient>();
 
-  constructor(private readonly orm: MikroORM) {}
+  constructor(
+    private readonly orm: MikroORM,
+    private readonly conflicts?: LockConflictReporter,
+  ) {}
 
   async run<T>(fn: () => Promise<T>, options: UnitOfWorkOptions = {}): Promise<T> {
     if (this.storage.getStore()) return fn();
@@ -78,6 +96,8 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
       try {
         return await attempt();
       } catch (error) {
+        const conflict = conflictReason(error);
+        if (conflict) this.conflicts?.lockConflict(conflict); // conta cada transação desfeita
         if (failures >= retries || !isConflictAbort(error)) throw error;
         // Jitter para os concorrentes derrubados não colidirem de novo no mesmo instante.
         await sleep(backoffDelayMs(failures + 1, CONFLICT_BACKOFF, 0.5 + Math.random()));

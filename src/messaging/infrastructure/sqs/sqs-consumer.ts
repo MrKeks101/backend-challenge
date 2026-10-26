@@ -7,6 +7,7 @@ import {
   type SQSClient,
 } from "@aws-sdk/client-sqs";
 import { Logger } from "@nestjs/common";
+import type { AppMetrics } from "../../../shared/infrastructure/metrics/metrics";
 import { backoffDelayMs } from "../../../shared/kernel";
 import type { Disposition, MessageHandler } from "../../application/ports/message-handler";
 import type { QueueRegistry } from "./sqs.module";
@@ -70,6 +71,7 @@ export class SqsConsumer {
     private readonly queues: QueueRegistry,
     private readonly handler: MessageHandler,
     private readonly config: ConsumerConfig,
+    private readonly metrics: AppMetrics,
   ) {}
 
   start(): void {
@@ -225,10 +227,18 @@ export class SqsConsumer {
         await this.delay(queueUrl, handle, receiveCount);
         return false;
       }
+      this.metrics.dlqMessages.inc({ reason: disposition.reason });
+      this.logger.warn({
+        event: "message_dead_lettered",
+        messageId: message.MessageId,
+        reason: disposition.reason,
+        receiveCount,
+      });
       await this.delete(queueUrl, handle);
       return true;
     }
 
+    this.metrics.retries.inc({ stage: "sqs_redelivery" });
     await this.delay(queueUrl, handle, receiveCount);
     return false;
   }

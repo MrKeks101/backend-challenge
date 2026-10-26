@@ -1,5 +1,5 @@
 import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from "@nestjs/common";
-import { APP_FILTER } from "@nestjs/core";
+import { APP_FILTER, APP_INTERCEPTOR } from "@nestjs/core";
 import { AuthModule } from "./auth/auth.module";
 import { ConsumerModule } from "./consumer/consumer.module";
 import { HealthModule } from "./health/health.module";
@@ -11,6 +11,7 @@ import { KernelModule } from "./shared/infrastructure/kernel.module";
 import { MetricsModule } from "./shared/infrastructure/metrics/metrics.module";
 import { CorrelationMiddleware } from "./shared/interfaces/http/correlation";
 import { ProblemDetailsFilter } from "./shared/interfaces/http/problem-details.filter";
+import { RequestContextInterceptor } from "./shared/interfaces/http/request-context.interceptor";
 import { WageringModule } from "./wagering/wagering.module";
 import { WalletModule } from "./wallet/wallet.module";
 
@@ -28,7 +29,10 @@ import { WalletModule } from "./wallet/wallet.module";
     WalletModule,
     WageringModule,
   ],
-  providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
+  providers: [
+    { provide: APP_FILTER, useClass: ProblemDetailsFilter },
+    { provide: APP_INTERCEPTOR, useClass: RequestContextInterceptor },
+  ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer): void {

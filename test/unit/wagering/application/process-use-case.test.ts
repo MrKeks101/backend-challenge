@@ -42,6 +42,8 @@ function recordingUow() {
   return { uow, calls };
 }
 
+import { makeMetrics } from "../../../support/metrics";
+
 function build(options: { walletExists: boolean }) {
   const { uow, calls } = recordingUow();
   const wallets = { findById: async () => (options.walletExists ? {} : null) };
@@ -52,6 +54,7 @@ function build(options: { walletExists: boolean }) {
     {} as WagerOutcomeApplier,
     { now: () => at(1) },
     new Uuid7Generator(),
+    makeMetrics().wager,
   );
   return { useCase, calls };
 }

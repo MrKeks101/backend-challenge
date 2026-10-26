@@ -1,4 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
+import { RequestContext } from "../../shared/application/request-context";
 import { CLOCK, ID_GENERATOR } from "../../shared/application/tokens";
 import { UNIT_OF_WORK, type UnitOfWork } from "../../shared/application/unit-of-work";
 import { type Clock, type IdGenerator, Money, type MoneyProps } from "../../shared/kernel";
@@ -14,6 +15,7 @@ import {
   type WagerTransactionKind,
 } from "../domain";
 import { ExternalTransactionIdConflictError, IdempotencyKeyConflictError } from "./errors";
+import { WAGER_METRICS, type WagerMetrics } from "./ports/wager-metrics";
 import {
   WAGER_TRANSACTION_REPOSITORY,
   type WagerTransactionRepository,
@@ -63,16 +65,24 @@ export class ProcessWagerTransactionUseCase {
     @Inject(WagerOutcomeApplier) private readonly applier: WagerOutcomeApplier,
     @Inject(CLOCK) private readonly clock: Clock,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
+    @Inject(WAGER_METRICS) private readonly metrics: WagerMetrics,
   ) {}
 
+  /** Caminho síncrono (HTTP). O consumidor SQS usa `preflight` + `processInTransaction` e mede o seu. */
   async execute(
     command: ProcessWagerTransactionCommand,
     context: ProcessContext,
   ): Promise<ProcessResult> {
+    const started = performance.now();
     await this.preflight(command);
-    return this.uow.run(() => this.processInTransaction(command, context), {
+    const result = await this.uow.run(() => this.processInTransaction(command, context), {
       retryOnConflict: CONFLICT_RETRIES,
     });
+    // Depois do commit: uma transação repetida por deadlock não conta duas vezes.
+    if (result.idempotentReplay) this.metrics.duplicate("replay");
+    else this.metrics.transactionResolved(result.transaction.status, command.kind);
+    this.metrics.observeProcessing("http", (performance.now() - started) / 1000);
+    return result;
   }
 
   /**
@@ -98,7 +108,9 @@ export class ProcessWagerTransactionUseCase {
       const now = this.clock.now();
       const transaction = this.build(command, now);
       if (!(await this.transactions.claim(transaction))) return false;
-      const wallet = await this.wallets.findByIdForUpdate(transaction.walletId);
+      const wallet = await this.metrics.measureWalletLock(() =>
+        this.wallets.findByIdForUpdate(transaction.walletId),
+      );
       if (!wallet) throw new WalletNotFoundError();
       await this.applier.applyFailure({
         transaction,
@@ -121,12 +133,19 @@ export class ProcessWagerTransactionUseCase {
   ): Promise<ProcessResult> {
     const now = this.clock.now();
     const transaction = this.build(command, now);
+    RequestContext.enrich({
+      transactionId: transaction.id,
+      walletId: transaction.walletId,
+      providerId: transaction.providerId,
+    });
 
     if (!(await this.transactions.claim(transaction))) {
       return this.resolveExisting(transaction, command.idempotencyKey);
     }
 
-    const wallet = await this.wallets.findByIdForUpdate(transaction.walletId);
+    const wallet = await this.metrics.measureWalletLock(() =>
+      this.wallets.findByIdForUpdate(transaction.walletId),
+    );
     if (!wallet) throw new WalletNotFoundError();
 
     const reference = transaction.referenceExternalTransactionId
@@ -166,6 +185,7 @@ export class ProcessWagerTransactionUseCase {
     const byKey = await this.transactions.findByIdempotencyKey(idempotencyKey);
     if (byKey) {
       if (!byKey.matchesPayload(attempted.payloadHash)) throw new IdempotencyKeyConflictError();
+      RequestContext.enrich({ transactionId: byKey.id }); // o id da transação ORIGINAL, não o descartado
       return { transaction: byKey, idempotentReplay: true };
     }
     const byExternalId = await this.transactions.findByExternalId(

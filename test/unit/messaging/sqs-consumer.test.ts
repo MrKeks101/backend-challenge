@@ -18,6 +18,8 @@ import {
   SqsConsumer,
   visibilityBackoffSeconds,
 } from "../../../src/messaging/infrastructure/sqs/sqs-consumer";
+import { AppMetrics } from "../../../src/shared/infrastructure/metrics/metrics";
+import { metricValue } from "../../support/metrics";
 
 /**
  * Semântica do consumidor (ack, retry, DLQ, ordem do grupo, shutdown) com um SQS roteirizado.
@@ -103,19 +105,85 @@ function build(
   fake: FakeSqs,
   handle: (m: IncomingMessage) => Promise<Disposition> | Disposition,
   overrides: Partial<ConsumerConfig> = {},
+  metrics = new AppMetrics(),
 ) {
   const handler: MessageHandler = { handle: async (m) => handle(m) };
-  return new SqsConsumer(fake as unknown as SQSClient, queues, handler, {
-    pollers: 1,
-    batchSize: 10,
-    waitSeconds: 1,
-    shutdownGraceMs: 2_000,
-    retryDelaySeconds: (count) => count * 10,
-    ...overrides,
-  });
+  return new SqsConsumer(
+    fake as unknown as SQSClient,
+    queues,
+    handler,
+    {
+      pollers: 1,
+      batchSize: 10,
+      waitSeconds: 1,
+      shutdownGraceMs: 2_000,
+      retryDelaySeconds: (count) => count * 10,
+      ...overrides,
+    },
+    metrics,
+  );
 }
 
 const kinds = (fake: FakeSqs) => fake.calls.map((c) => `${c.type}:${c.handle ?? ""}`);
+
+describe("métricas do consumidor", () => {
+  test("RETRY conta uma reentrega agendada", async () => {
+    const metrics = new AppMetrics();
+    const fake = new FakeSqs([[message("a", "g1", 2)]]);
+    const consumer = build(fake, () => ({ action: "RETRY", reason: "x" }), {}, metrics);
+
+    consumer.start();
+    await waitFor(() => fake.calls.length >= 1);
+    await consumer.stop();
+
+    expect(await metricValue(metrics, "wager_retries_total", { stage: "sqs_redelivery" })).toBe(1);
+    expect(await metricValue(metrics, "dlq_messages_total")).toBe(0);
+  });
+
+  test("DEAD_LETTER conta a mensagem na DLQ, por motivo, só depois de enviada", async () => {
+    const metrics = new AppMetrics();
+    const fake = new FakeSqs([[message("a", "g1")]]);
+    const consumer = build(
+      fake,
+      () => ({ action: "DEAD_LETTER", reason: "INVALID_MESSAGE" }),
+      {},
+      metrics,
+    );
+
+    consumer.start();
+    await waitFor(() => fake.calls.length >= 2);
+    await consumer.stop();
+
+    expect(await metricValue(metrics, "dlq_messages_total", { reason: "INVALID_MESSAGE" })).toBe(1);
+    expect(await metricValue(metrics, "wager_retries_total")).toBe(0);
+  });
+
+  test("DLQ indisponível: nada foi para a DLQ, então não conta", async () => {
+    const metrics = new AppMetrics();
+    const fake = new FakeSqs([[message("a", "g1", 2)]]);
+    fake.failSend = true;
+    const consumer = build(fake, () => ({ action: "DEAD_LETTER", reason: "X" }), {}, metrics);
+
+    consumer.start();
+    await waitFor(() => fake.calls.length >= 1);
+    await consumer.stop();
+
+    expect(await metricValue(metrics, "dlq_messages_total")).toBe(0);
+  });
+
+  test("ACK não mexe nas métricas de retry nem de DLQ", async () => {
+    const metrics = new AppMetrics();
+    const fake = new FakeSqs([[message("a", "g1")]]);
+    const consumer = build(fake, () => ({ action: "ACK", outcome: "PROCESSED" }), {}, metrics);
+
+    consumer.start();
+    await waitFor(() => fake.calls.length >= 1);
+    await consumer.stop();
+
+    expect(await metricValue(metrics, "wager_retries_total")).toBe(0);
+    expect(await metricValue(metrics, "dlq_messages_total")).toBe(0);
+  });
+});
 
 describe("desfecho de cada mensagem", () => {
   test("ACK: apaga e nada mais", async () => {

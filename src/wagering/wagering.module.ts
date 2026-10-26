@@ -14,12 +14,14 @@ import {
   PENDING_REFERENCE_SETTINGS,
   type PendingReferenceSettings,
 } from "./application/pending-reference-settings";
+import { WAGER_METRICS } from "./application/ports/wager-metrics";
 import { ProcessWagerTransactionUseCase } from "./application/process-wager-transaction.use-case";
 import { ReprocessPendingTransactionUseCase } from "./application/reprocess-pending-transaction.use-case";
 import { WagerOutcomeApplier } from "./application/wager-outcome-applier";
 import { GetTransactionQuery } from "./application/wager-queries";
 import { WageringOpeningRecorder } from "./application/wagering-opening-recorder";
 import { validatePendingReferenceConfig } from "./domain";
+import { PrometheusWagerMetrics } from "./infrastructure/observability/prometheus-wager-metrics";
 import { WageringPersistenceModule } from "./infrastructure/wagering-persistence.module";
 import { WageringController } from "./interfaces/http/wagering.controller";
 
@@ -58,6 +60,7 @@ const randomJitter = (): number => 0.8 + Math.random() * 0.4;
         leaseMs: env.REPROCESSOR_LEASE_MS,
       }),
     },
+    { provide: WAGER_METRICS, useClass: PrometheusWagerMetrics },
     WagerOutcomeApplier,
     ProcessWagerTransactionUseCase,
     ReprocessPendingTransactionUseCase,
@@ -66,6 +69,7 @@ const randomJitter = (): number => 0.8 + Math.random() * 0.4;
     { provide: OPENING_RECORDER, useClass: WageringOpeningRecorder },
   ],
   exports: [
+    WAGER_METRICS,
     OPENING_RECORDER,
     WagerOutcomeApplier,
     ProcessWagerTransactionUseCase,

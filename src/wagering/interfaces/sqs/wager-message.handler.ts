@@ -9,10 +9,12 @@ import {
   type InboxRepository,
 } from "../../../messaging/application/ports/messaging-repositories";
 import { InboxMessage, MessagePayloadMismatchError } from "../../../messaging/domain";
+import { RequestContext } from "../../../shared/application/request-context";
 import { CLOCK } from "../../../shared/application/tokens";
 import { UNIT_OF_WORK, type UnitOfWork } from "../../../shared/application/unit-of-work";
 import { classifyError } from "../../../shared/infrastructure/persistence/error-classifier";
 import { type Clock, DomainError, hashCanonical } from "../../../shared/kernel";
+import { WAGER_METRICS, type WagerMetrics } from "../../application/ports/wager-metrics";
 import {
   type ProcessWagerTransactionCommand,
   ProcessWagerTransactionUseCase,
@@ -41,6 +43,7 @@ export class WagerMessageHandler implements MessageHandler {
     @Inject(UNIT_OF_WORK) private readonly uow: UnitOfWork,
     @Inject(INBOX_REPOSITORY) private readonly inbox: InboxRepository,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Inject(WAGER_METRICS) private readonly metrics: WagerMetrics,
   ) {}
 
   async handle({ body, receiveCount }: IncomingMessage): Promise<Disposition> {
@@ -51,15 +54,46 @@ export class WagerMessageHandler implements MessageHandler {
     const { message } = parsed;
     const command = toCommand(message);
 
+    // Tudo o que roda daqui (logs, eventos) carrega o id da mensagem como correlationId.
+    return RequestContext.run(
+      {
+        correlationId: message.messageId,
+        messageId: message.messageId,
+        walletId: command.walletId,
+        providerId: command.providerId,
+      },
+      () => this.process(message, command, receiveCount),
+    );
+  }
+
+  private async process(
+    message: WagerRequestedMessage,
+    command: ProcessWagerTransactionCommand,
+    receiveCount: number,
+  ): Promise<Disposition> {
+    const started = performance.now();
     try {
       await this.useCase.preflight(command);
       const outcome = await this.uow.run(() => this.processOnce(message, command), {
         retryOnConflict: CONFLICT_RETRIES,
       });
+      this.countOutcome(outcome, command, (performance.now() - started) / 1000);
       return { action: "ACK", outcome };
     } catch (error) {
       return this.dispose(error, message, command, receiveCount);
     }
+  }
+
+  /** Depois do commit. `DUPLICATE` = inbox; `REPLAY` = mesma idempotency key já processada. */
+  private countOutcome(
+    outcome: string,
+    command: ProcessWagerTransactionCommand,
+    seconds: number,
+  ): void {
+    if (outcome === "DUPLICATE") this.metrics.duplicate("inbox");
+    else if (outcome === "REPLAY") this.metrics.duplicate("replay");
+    else this.metrics.transactionResolved(outcome, command.kind);
+    this.metrics.observeProcessing("sqs", seconds);
   }
 
   /** Inbox + efeito financeiro + marca de processada: uma só transação SQL. */
@@ -123,7 +157,10 @@ export class WagerMessageHandler implements MessageHandler {
     code: FailureCode,
   ): Promise<void> {
     try {
-      await this.useCase.recordFailure(command, code, { correlationId: message.messageId });
+      const recorded = await this.useCase.recordFailure(command, code, {
+        correlationId: message.messageId,
+      });
+      if (recorded) this.metrics.transactionResolved("FAILED", command.kind);
     } catch (error) {
       this.logger.warn({
         event: "record_failure_skipped",

@@ -123,4 +123,18 @@ export class MikroOrmOutboxRepository implements OutboxRepository {
       throw new OptimisticLockError(`outbox message ${message.id} not pending`);
     }
   }
+
+  async backlog(): Promise<{ pending: number; oldestOccurredAt: Date | null }> {
+    const rows = await this.uow
+      .current()
+      .execute<{ pending: number; oldest: Date | string | null }[]>(
+        `SELECT count(*)::int AS pending, min(occurred_at) AS oldest
+           FROM ${OUTBOX} WHERE published_at IS NULL`,
+      );
+    const row = rows[0];
+    return {
+      pending: row?.pending ?? 0,
+      oldestOccurredAt: row?.oldest ? new Date(row.oldest) : null,
+    };
+  }
 }

@@ -5,6 +5,7 @@ import type {
   MessageHandler,
 } from "../../../src/messaging/application/ports/message-handler";
 import { SqsConsumer } from "../../../src/messaging/infrastructure/sqs/sqs-consumer";
+import { AppMetrics } from "../../../src/shared/infrastructure/metrics/metrics";
 import { WagerMessageHandler } from "../../../src/wagering/interfaces/sqs/wager-message.handler";
 import {
   type ConsumerHarness,
@@ -71,13 +72,19 @@ function slowHandler(delayMs: number) {
 }
 
 function standaloneConsumer(handler: MessageHandler, overrides: { shutdownGraceMs?: number } = {}) {
-  return new SqsConsumer(h.sqs, registryFor(h.sqs, h.prefix), handler, {
-    pollers: 1,
-    batchSize: 10,
-    waitSeconds: 1,
-    shutdownGraceMs: overrides.shutdownGraceMs ?? 15_000,
-    retryDelaySeconds: () => 0,
-  });
+  return new SqsConsumer(
+    h.sqs,
+    registryFor(h.sqs, h.prefix),
+    handler,
+    {
+      pollers: 1,
+      batchSize: 10,
+      waitSeconds: 1,
+      shutdownGraceMs: overrides.shutdownGraceMs ?? 15_000,
+      retryDelaySeconds: () => 0,
+    },
+    new AppMetrics(),
+  );
 }
 
 describe("ordem e paralelismo", () => {

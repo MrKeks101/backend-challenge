@@ -27,7 +27,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | M8 | Outbox publisher e SQS de saída | [x] |
 | M9 | Consumidor SQS (inbox, retry, DLQ, shutdown) | [x] |
 | M10 | Reprocessador de `PENDING_REFERENCE` | [x] |
-| M11 | Observabilidade | [ ] |
+| M11 | Observabilidade | [x] |
 | M12 | Suíte de concorrência multi-instância e recuperação | [ ] |
 | M13 | Docker Compose completo e README | [ ] |
 | M14 | Fechamento da documentação (e teste de carga, opcional) | [ ] |

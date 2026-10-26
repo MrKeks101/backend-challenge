@@ -15,6 +15,7 @@ import {
 } from "../messaging/infrastructure/sqs/sqs-consumer";
 import { ENV } from "../shared/infrastructure/config/config.module";
 import type { Env } from "../shared/infrastructure/config/env";
+import { APP_METRICS, type AppMetrics } from "../shared/infrastructure/metrics/metrics";
 import { WagerMessageHandler } from "../wagering/interfaces/sqs/wager-message.handler";
 import { WageringModule } from "../wagering/wagering.module";
 
@@ -34,16 +35,32 @@ const randomJitter = (): number => 0.8 + Math.random() * 0.4;
     { provide: MESSAGE_HANDLER, useExisting: WagerMessageHandler },
     {
       provide: SQS_CONSUMER,
-      inject: [SQS_CLIENT, QueueRegistry, MESSAGE_HANDLER, ENV],
-      useFactory: (sqs: SQSClient, queues: QueueRegistry, handler: WagerMessageHandler, env: Env) =>
-        new SqsConsumer(sqs, queues, handler, {
-          pollers: env.CONSUMER_POLLERS,
-          batchSize: env.CONSUMER_BATCH_SIZE,
-          waitSeconds: env.CONSUMER_WAIT_SECONDS,
-          shutdownGraceMs: env.SHUTDOWN_GRACE_MS,
-          retryDelaySeconds: (receiveCount) =>
-            visibilityBackoffSeconds(receiveCount, env.CONSUMER_RETRY_BASE_SECONDS, randomJitter()),
-        }),
+      inject: [SQS_CLIENT, QueueRegistry, MESSAGE_HANDLER, ENV, APP_METRICS],
+      useFactory: (
+        sqs: SQSClient,
+        queues: QueueRegistry,
+        handler: WagerMessageHandler,
+        env: Env,
+        metrics: AppMetrics,
+      ) =>
+        new SqsConsumer(
+          sqs,
+          queues,
+          handler,
+          {
+            pollers: env.CONSUMER_POLLERS,
+            batchSize: env.CONSUMER_BATCH_SIZE,
+            waitSeconds: env.CONSUMER_WAIT_SECONDS,
+            shutdownGraceMs: env.SHUTDOWN_GRACE_MS,
+            retryDelaySeconds: (receiveCount) =>
+              visibilityBackoffSeconds(
+                receiveCount,
+                env.CONSUMER_RETRY_BASE_SECONDS,
+                randomJitter(),
+              ),
+          },
+          metrics,
+        ),
     },
   ],
   exports: [MESSAGE_HANDLER],

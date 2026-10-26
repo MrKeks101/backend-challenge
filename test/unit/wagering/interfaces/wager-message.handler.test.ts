@@ -1,6 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { InboxRepository } from "../../../../src/messaging/application/ports/messaging-repositories";
 import type { InboxMessage } from "../../../../src/messaging/domain";
+import {
+  type LogContext,
+  RequestContext,
+} from "../../../../src/shared/application/request-context";
 import type {
   UnitOfWork,
   UnitOfWorkOptions,
@@ -21,6 +25,7 @@ import {
   WagerMessageHandler,
 } from "../../../../src/wagering/interfaces/sqs/wager-message.handler";
 import { WalletNotFoundError } from "../../../../src/wallet/application/errors";
+import { makeMetrics, metricValue } from "../../../support/metrics";
 
 /**
  * Decisões do handler (ack / retry / DLQ) com fakes de portas. O comportamento de ponta a ponta,
@@ -111,10 +116,15 @@ function setup(
       return fn();
     },
   };
-  const handler = new WagerMessageHandler(useCase, uow, inbox, {
-    now: () => new Date("2026-07-29T15:00:01.000Z"),
-  });
-  return { handler, inbox, calls };
+  const metrics = makeMetrics();
+  const handler = new WagerMessageHandler(
+    useCase,
+    uow,
+    inbox,
+    { now: () => new Date("2026-07-29T15:00:01.000Z") },
+    metrics.wager,
+  );
+  return { handler, inbox, calls, metrics: metrics.app };
 }
 
 const handle = (h: WagerMessageHandler, body: unknown, receiveCount = 1) =>
@@ -388,5 +398,116 @@ describe("classificação de erros", () => {
     });
 
     expect(await handle(handler, validMessage(), 1)).toMatchObject({ action: "RETRY" });
+  });
+});
+
+describe("contexto de log (correlationId via AsyncLocalStorage)", () => {
+  test("o caso de uso roda com messageId como correlationId e os ids da mensagem", async () => {
+    let seen: Readonly<LogContext> = {};
+    const { handler } = setup({
+      process: async () => {
+        seen = { ...RequestContext.current() };
+        return { transaction: { status: "PROCESSED" }, idempotentReplay: false };
+      },
+    });
+
+    await handle(handler, validMessage({}, "msg-42"));
+
+    expect(seen).toEqual({
+      correlationId: "msg-42",
+      messageId: "msg-42",
+      walletId: WALLET,
+      providerId: "provider-a",
+    });
+  });
+
+  test("o contexto não vaza para fora do handler nem entre mensagens simultâneas", async () => {
+    const seen: string[] = [];
+    const { handler } = setup({
+      process: async (command) => {
+        await new Promise((resolve) =>
+          setTimeout(resolve, command.externalTransactionId === "t-1" ? 20 : 1),
+        );
+        seen.push(`${command.externalTransactionId}=${RequestContext.current().messageId}`);
+        return { transaction: { status: "PROCESSED" }, idempotentReplay: false };
+      },
+    });
+
+    await Promise.all([
+      handle(handler, validMessage({ externalTransactionId: "t-1", idempotencyKey: "k1" }, "m-1")),
+      handle(handler, validMessage({ externalTransactionId: "t-2", idempotencyKey: "k2" }, "m-2")),
+    ]);
+
+    expect(seen.sort()).toEqual(["t-1=m-1", "t-2=m-2"]);
+    expect(RequestContext.current()).toEqual({});
+  });
+});
+
+describe("métricas", () => {
+  test("PROCESSED conta a transação por status e tipo e mede a latência (sqs)", async () => {
+    const { handler, metrics } = setup();
+
+    await handle(handler, validMessage());
+
+    expect(
+      await metricValue(metrics, "wager_transactions_total", { status: "PROCESSED", kind: "BET" }),
+    ).toBe(1);
+    expect(
+      await metricValue(metrics, "wager_processing_duration_seconds_count", { source: "sqs" }),
+    ).toBe(1);
+  });
+
+  test("mensagem repetida conta duplicata da inbox, não uma nova transação", async () => {
+    const { handler, metrics } = setup();
+
+    await handle(handler, validMessage());
+    await handle(handler, validMessage());
+
+    expect(await metricValue(metrics, "wager_duplicates_total", { source: "inbox" })).toBe(1);
+    expect(await metricValue(metrics, "wager_transactions_total")).toBe(1);
+  });
+
+  test("replay da idempotency key conta duplicata `replay`", async () => {
+    const { handler, metrics } = setup({
+      process: async () => ({ transaction: { status: "PROCESSED" }, idempotentReplay: true }),
+    });
+
+    await handle(handler, validMessage());
+
+    expect(await metricValue(metrics, "wager_duplicates_total", { source: "replay" })).toBe(1);
+    expect(await metricValue(metrics, "wager_transactions_total")).toBe(0);
+  });
+
+  test("falha permanente gravada conta FAILED; retry e DLQ não contam transação", async () => {
+    const failing = setup({
+      process: async () => {
+        throw new TypeError("boom");
+      },
+    });
+    await handle(failing.handler, validMessage());
+    expect(
+      await metricValue(failing.metrics, "wager_transactions_total", { status: "FAILED" }),
+    ).toBe(1);
+
+    const retrying = setup({
+      process: async () => {
+        throw transient();
+      },
+    });
+    await handle(retrying.handler, validMessage(), 1);
+    expect(await metricValue(retrying.metrics, "wager_transactions_total")).toBe(0);
+  });
+
+  test("se o FAILED não foi gravado (já existia), não conta", async () => {
+    const { handler, metrics } = setup({
+      process: async () => {
+        throw new TypeError("boom");
+      },
+      recordFailure: async () => false,
+    });
+
+    await handle(handler, validMessage());
+
+    expect(await metricValue(metrics, "wager_transactions_total")).toBe(0);
   });
 });
