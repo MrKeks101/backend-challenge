@@ -24,7 +24,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | M5 | Persistência: migrations, schema e repositórios | [x] |
 | M6 | Wallets: casos de uso e API HTTP | [x] |
 | M7 | Processamento de transações via HTTP (idempotência e concorrência) | [x] |
-| M8 | Outbox publisher e SQS de saída | [ ] |
+| M8 | Outbox publisher e SQS de saída | [x] |
 | M9 | Consumidor SQS (inbox, retry, DLQ, shutdown) | [ ] |
 | M10 | Reprocessador de `PENDING_REFERENCE` | [ ] |
 | M11 | Observabilidade | [ ] |

@@ -7,7 +7,12 @@ async function bootstrap(): Promise<void> {
   const env = loadEnv();
   const app = await NestFactory.create(AppModule);
   app.enableShutdownHooks();
-  await app.listen(env.PORT);
+  if (env.APP_ROLES.has("api")) {
+    await app.listen(env.PORT);
+  } else {
+    // Processo só de workers (publisher, consumer, reprocessor): não abre porta HTTP.
+    await app.init();
+  }
 }
 
 bootstrap().catch((err: unknown) => {

@@ -693,6 +693,19 @@ Envelope: classe abstrata `IntegrationEvent<T>` com subclasses concretas (`event
 
 ---
 
+### 12.4 Implementação (M8)
+
+- **Ciclo do `OutboxPublisher.runOnce()`** em três tempos, cada um em transação curta (nunca há I/O de rede com transação aberta): `claimDue` (`SKIP LOCKED` + lease em `next_attempt_at`) → publicar → `markPublished` ou `scheduleRetry` (backoff 1 s dobrando até 5 min, com jitter 0,8–1,2).
+- **Ordem por wallet.** Se um evento falha, os seguintes do **mesmo grupo** são pulados no ciclo (não contam como tentativa) e voltam quando o lease vence; outros grupos seguem. Com vários publishers a ordem entre grupos reivindicados por instâncias diferentes não é garantida (AR-03: a garantia está no banco, não na fila).
+- **At-least-once.** Se o processo morre entre publicar e marcar, outra instância republica depois do lease; o `MessageDeduplicationId = eventId` deduplica na janela de 5 min do FIFO e, fora dela, o consumidor deduplica por `eventId`. Se o lease vence durante o envio e outro publisher marca primeiro, o `OptimisticLockError` do atrasado é tolerado.
+- **`last_error`** guarda só o tipo do erro (`TypeError`, `Error(ECONNREFUSED)`), nunca a mensagem nem o payload.
+- **Papéis (`APP_ROLES`)**: `api`, `publisher`, `consumer`, `reprocessor`; padrão = todos. Só `publisher` liga o laço (`OutboxPublisherLoop`); sem `api` o processo não abre porta HTTP (`app.init()`). O laço nunca morre por erro de ciclo (pausa crescente com teto) e `stop()` acorda a pausa e espera o ciclo em andamento, no `beforeApplicationShutdown`, antes de banco e SQS fecharem.
+- **Filas.** `ensureQueues` cria a DLQ, depois a fila de entrada (redrive `maxReceiveCount = 5`) e a de eventos. `QueueRegistry` memoiza o sucesso e **não** a falha. `SQS_QUEUE_PREFIX` isola ambientes/testes que compartilham o SQS.
+- **`GET /health/ready`** consulta PostgreSQL (`SELECT 1`) e SQS (`GetQueueAttributes`) em paralelo, prazo de 2 s por sonda; 200 `{status:"ok"}` ou 503 `{status:"unavailable"}`, com `checks` por dependência e sem detalhes do erro.
+- **Cobertura.** "Processo morto" é simulado reivindicando com `claimDue` e descartando (equivale a um processo que morreu com o lease em mãos), com relógio controlado nos testes.
+
+---
+
 ## 13. D11 — API HTTP: modo de processamento e status
 
 ### 13.1 Síncrono × assíncrono (✅ síncrono)
@@ -882,3 +895,4 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-24 | M5: persistência (§8.5). `TableDef` como fonte única de schema; migrations SQL à mão (tabelas + triggers); repositórios, `UnitOfWork`, `ErrorClassifier`, invariant checker. **Revisão do D3 (§5.2):** `FOR NO KEY UPDATE` no lugar de `FOR UPDATE`, após deadlock real entre o `KEY SHARE` das FKs e o lock da wallet. Achado: `em.execute` devolve `timestamptz` como texto. |
 | 2026-10-26 | M6: API de wallets (§13.4). Porta `OpeningRecorder` entre os contextos; cursor opaco por `seq`; reconciliação em `REPEATABLE READ`; `problem+json` global com `toProblem` puro; `AuthGuard` no-op. `UnitOfWork` ganhou `isolation`. Política de mutation check proporcional ao risco registrada em `milestones.md`. |
 | 2026-10-26 | M7: processamento idempotente e concorrente via HTTP (§13.5). `WagerOutcomeApplier` compartilhável com o reprocessador; `UnitOfWork` ganhou `retryOnConflict` (só `40001`/`40P01`). **Revisão do §9.3:** `CURRENCY_MISMATCH` não guarda saldo observado (a wallet está em outra moeda), então `balance` é `null` na resposta e no evento; achado pelo teste ponta a ponta (antes dava 400 em vez de 422). Mutation check completo: 33 mutantes, todos mortos ou equivalentes. |
+| 2026-10-26 | M8: outbox publisher e SQS de saída (§12.4). Papéis por `APP_ROLES`, `ensureQueues` idempotente com redrive, `GET /health/ready`, `SQS_QUEUE_PREFIX` para isolar testes. Mutation check reduzido por decisão do autor (o núcleo já foi coberto no M7): rodaram apenas 5 mutantes do laço do worker (todos mortos) antes de ser interrompido; o restante é validado pelas suítes de integração e concorrência. |
