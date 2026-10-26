@@ -5,6 +5,7 @@ import { ConsumerModule } from "./consumer/consumer.module";
 import { HealthModule } from "./health/health.module";
 import { ReadinessModule } from "./health/readiness.module";
 import { MessagingModule } from "./messaging/messaging.module";
+import { ReprocessorModule } from "./reprocessor/reprocessor.module";
 import { ConfigModule } from "./shared/infrastructure/config/config.module";
 import { KernelModule } from "./shared/infrastructure/kernel.module";
 import { MetricsModule } from "./shared/infrastructure/metrics/metrics.module";
@@ -23,6 +24,7 @@ import { WalletModule } from "./wallet/wallet.module";
     ReadinessModule,
     MessagingModule,
     ConsumerModule,
+    ReprocessorModule,
     WalletModule,
     WageringModule,
   ],

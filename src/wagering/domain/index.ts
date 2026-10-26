@@ -31,6 +31,7 @@ export {
   firstPendingReferenceAttemptAt,
   type PendingReferenceConfig,
   type RetryDecision,
+  validatePendingReferenceConfig,
 } from "./pending-reference-policy";
 export {
   decideWagerOutcome,

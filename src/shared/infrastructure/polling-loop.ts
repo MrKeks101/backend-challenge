@@ -1,30 +1,41 @@
 import { Logger } from "@nestjs/common";
-import type { PublishCycleResult } from "../application/outbox-publisher";
 
-export interface WorkerOptions {
+/** O que o laço precisa saber de um ciclo para decidir a pausa. */
+export interface CycleStats {
+  /** Itens reivindicados neste ciclo. */
+  claimed: number;
+  /** Itens que falharam neste ciclo (só para log). */
+  failed: number;
+}
+
+export interface PollingOptions {
   /** Pausa quando um ciclo não encontra trabalho (ou falha). */
   pollIntervalMs: number;
   /** Teto da pausa depois de falhas seguidas (backoff linear até aqui). */
   maxErrorPauseMs?: number;
+  /** Nome do worker nos logs. */
+  name?: string;
 }
 
 /**
- * Laço do publisher: roda ciclos até `stop()`. Se o ciclo veio cheio, repete na hora (há mais
- * trabalho); senão dorme. Um erro (banco ou SQS fora) nunca derruba o laço: registra e tenta de
- * novo com pausa crescente. `stop()` interrompe a pausa e espera o ciclo em andamento terminar,
- * para o processo encerrar sem largar uma publicação pela metade.
+ * Laço de worker (publisher da outbox, reprocessador de pendências): roda ciclos até `stop()`. Se o
+ * ciclo veio cheio, repete na hora (há mais trabalho); senão dorme. Um erro (banco ou SQS fora)
+ * nunca derruba o laço: registra e tenta de novo com pausa crescente. `stop()` interrompe a pausa
+ * e espera o ciclo em andamento terminar, para o processo encerrar sem largar trabalho pela metade.
  */
-export class OutboxPublisherLoop {
-  private readonly logger = new Logger("OutboxPublisher");
+export class PollingLoop {
+  private readonly logger: Logger;
   private running = false;
   private loop: Promise<void> | undefined;
   private wake: (() => void) | undefined;
 
   constructor(
-    private readonly cycle: () => Promise<PublishCycleResult>,
+    private readonly cycle: () => Promise<CycleStats>,
     private readonly batchSize: number,
-    private readonly options: WorkerOptions,
-  ) {}
+    private readonly options: PollingOptions,
+  ) {
+    this.logger = new Logger(options.name ?? "PollingLoop");
+  }
 
   start(): void {
     if (this.running) return;
@@ -46,9 +57,9 @@ export class OutboxPublisherLoop {
       try {
         const result = await this.cycle();
         consecutiveErrors = 0;
-        if (result.claimed >= this.batchSize) pause = 0; // veio cheio: há mais por publicar
+        if (result.claimed >= this.batchSize) pause = 0; // veio cheio: há mais por fazer
         if (result.failed > 0) {
-          this.logger.warn({ event: "outbox_publish_failed", failed: result.failed });
+          this.logger.warn({ event: "cycle_items_failed", failed: result.failed });
         }
       } catch (error) {
         consecutiveErrors++;
@@ -58,7 +69,7 @@ export class OutboxPublisherLoop {
         );
         // Só o tipo do erro: mensagens de driver podem carregar dados da linha.
         this.logger.error({
-          event: "outbox_cycle_error",
+          event: "cycle_error",
           error: error instanceof Error ? error.name : typeof error,
           consecutiveErrors,
         });

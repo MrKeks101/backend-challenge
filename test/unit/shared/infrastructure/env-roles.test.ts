@@ -76,6 +76,42 @@ describe("configuração do consumidor", () => {
   });
 });
 
+describe("configuração do reprocessador", () => {
+  test("padrões: 10 tentativas, backoff 2 s até 5 min, TTL de 1 h", () => {
+    expect(loadEnv(base)).toMatchObject({
+      REPROCESSOR_POLL_INTERVAL_MS: 1_000,
+      REPROCESSOR_BATCH_SIZE: 20,
+      REPROCESSOR_LEASE_MS: 60_000,
+      PENDING_REFERENCE_MAX_ATTEMPTS: 10,
+      PENDING_REFERENCE_TTL_MS: 3_600_000,
+      PENDING_REFERENCE_BACKOFF_BASE_MS: 2_000,
+      PENDING_REFERENCE_BACKOFF_CAP_MS: 300_000,
+    });
+  });
+
+  test("valores informados são lidos como número", () => {
+    const env = loadEnv({
+      ...base,
+      PENDING_REFERENCE_MAX_ATTEMPTS: "3",
+      REPROCESSOR_BATCH_SIZE: "7",
+    });
+    expect(env.PENDING_REFERENCE_MAX_ATTEMPTS).toBe(3);
+    expect(env.REPROCESSOR_BATCH_SIZE).toBe(7);
+  });
+
+  test.each([
+    "REPROCESSOR_POLL_INTERVAL_MS",
+    "REPROCESSOR_BATCH_SIZE",
+    "REPROCESSOR_LEASE_MS",
+    "PENDING_REFERENCE_MAX_ATTEMPTS",
+    "PENDING_REFERENCE_TTL_MS",
+    "PENDING_REFERENCE_BACKOFF_BASE_MS",
+    "PENDING_REFERENCE_BACKOFF_CAP_MS",
+  ])("rejeita %s=0", (key) => {
+    expect(() => loadEnv({ ...base, [key]: "0" })).toThrow(key);
+  });
+});
+
 describe("configuração do publisher", () => {
   test("padrões", () => {
     const env = loadEnv(base);

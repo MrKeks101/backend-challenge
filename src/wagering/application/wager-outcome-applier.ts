@@ -31,6 +31,10 @@ import {
   WalletBalanceChanged,
 } from "../domain";
 import {
+  PENDING_REFERENCE_SETTINGS,
+  type PendingReferenceSettings,
+} from "./pending-reference-settings";
+import {
   WAGER_TRANSACTION_REPOSITORY,
   type WagerTransactionRepository,
 } from "./ports/wager-transaction-repository";
@@ -58,6 +62,7 @@ export class WagerOutcomeApplier {
     @Inject(LEDGER_REPOSITORY) private readonly ledger: LedgerRepository,
     @Inject(OUTBOX_REPOSITORY) private readonly outbox: OutboxRepository,
     @Inject(ID_GENERATOR) private readonly ids: IdGenerator,
+    @Inject(PENDING_REFERENCE_SETTINGS) private readonly pending: PendingReferenceSettings,
   ) {}
 
   async apply({
@@ -79,7 +84,9 @@ export class WagerOutcomeApplier {
         if (transaction.status !== WagerTransactionStatus.Pending) {
           throw new InvalidArgumentError("only a new transaction enters PENDING_REFERENCE here");
         }
-        transaction.markPendingReference(firstPendingReferenceAttemptAt(at));
+        transaction.markPendingReference(
+          firstPendingReferenceAttemptAt(at, this.pending.policy, this.pending.jitter()),
+        );
         await this.transactions.update(transaction, at);
         await this.emit(WagerTransactionPendingReference.from(transaction, context()), wallet);
         return;

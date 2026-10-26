@@ -1,4 +1,4 @@
-import { type BackoffConfig, backoffDelayMs } from "../../shared/kernel";
+import { type BackoffConfig, backoffDelayMs, InvalidArgumentError } from "../../shared/kernel";
 import type { WagerTransaction } from "./wager-transaction";
 
 export interface PendingReferenceConfig extends BackoffConfig {
@@ -19,6 +19,19 @@ export const DEFAULT_PENDING_REFERENCE_CONFIG: PendingReferenceConfig = {
   capMs: 300_000,
   ttlMs: 3_600_000,
 };
+
+/** Falha cedo (na subida) se a configuração não produz um backoff válido. */
+export function validatePendingReferenceConfig(config: PendingReferenceConfig): void {
+  if (!Number.isInteger(config.maxAttempts) || config.maxAttempts < 1) {
+    throw new InvalidArgumentError("pending reference maxAttempts must be an integer >= 1");
+  }
+  if (!Number.isInteger(config.ttlMs) || config.ttlMs < 1) {
+    throw new InvalidArgumentError("pending reference ttlMs must be a positive integer");
+  }
+  if (config.baseMs <= 0 || config.capMs < config.baseMs) {
+    throw new InvalidArgumentError("pending reference backoff requires 0 < baseMs <= capMs");
+  }
+}
 
 export type RetryDecision =
   | { action: "RETRY"; nextAttemptAt: Date }

@@ -50,6 +50,15 @@ const envSchema = z.object({
   CONSUMER_RETRY_BASE_SECONDS: z.coerce.number().int().min(0).max(3600).default(2),
   /** Quanto o SIGTERM espera as mensagens em andamento (menor que o grace period do orquestrador). */
   SHUTDOWN_GRACE_MS: positiveInt(25_000),
+  /** Reprocessador de `PENDING_REFERENCE`. */
+  REPROCESSOR_POLL_INTERVAL_MS: positiveInt(1_000),
+  REPROCESSOR_BATCH_SIZE: positiveInt(20),
+  REPROCESSOR_LEASE_MS: positiveInt(60_000),
+  /** Espera pela referência: 10 tentativas, backoff 2 s·2^n com teto de 5 min, TTL de 1 h. */
+  PENDING_REFERENCE_MAX_ATTEMPTS: positiveInt(10),
+  PENDING_REFERENCE_TTL_MS: positiveInt(3_600_000),
+  PENDING_REFERENCE_BACKOFF_BASE_MS: positiveInt(2_000),
+  PENDING_REFERENCE_BACKOFF_CAP_MS: positiveInt(300_000),
   /** Pausa do publisher quando a outbox está vazia. */
   OUTBOX_POLL_INTERVAL_MS: positiveInt(500),
   OUTBOX_BATCH_SIZE: positiveInt(20),

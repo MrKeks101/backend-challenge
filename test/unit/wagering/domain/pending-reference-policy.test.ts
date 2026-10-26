@@ -4,6 +4,7 @@ import {
   decideAfterFailedAttempt,
   firstPendingReferenceAttemptAt,
   WagerTransactionKind as Kind,
+  validatePendingReferenceConfig,
   type WagerTransaction,
 } from "../../../../src/wagering/domain";
 import { at, makeTx, T0 } from "../../../support/wagering";
@@ -71,5 +72,28 @@ describe("política de PENDING_REFERENCE (D8)", () => {
     // esperas após cada falha 1..9 (a 10ª desiste): 4,8,16,32,64,128,256,300,300 s + 1ª de 2 s
     const total = [2, 4, 8, 16, 32, 64, 128, 256, 300, 300].reduce((a, b) => a + b, 0);
     expect(total / 60).toBeCloseTo(18.5, 0);
+  });
+});
+
+describe("validatePendingReferenceConfig", () => {
+  test("a configuração padrão é válida", () => {
+    expect(() => validatePendingReferenceConfig(CONFIG)).not.toThrow();
+  });
+
+  test.each([
+    ["maxAttempts 0", { maxAttempts: 0 }],
+    ["maxAttempts fracionário", { maxAttempts: 1.5 }],
+    ["ttlMs 0", { ttlMs: 0 }],
+    ["baseMs 0", { baseMs: 0 }],
+    ["baseMs negativo", { baseMs: -1 }],
+    ["teto menor que a base", { baseMs: 5_000, capMs: 1_000 }],
+  ])("rejeita %s", (_label, override) => {
+    expect(() => validatePendingReferenceConfig({ ...CONFIG, ...override })).toThrow();
+  });
+
+  test("teto igual à base é aceito", () => {
+    expect(() =>
+      validatePendingReferenceConfig({ ...CONFIG, baseMs: 1_000, capMs: 1_000 }),
+    ).not.toThrow();
   });
 });

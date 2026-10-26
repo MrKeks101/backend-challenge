@@ -1,9 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { PublishCycleResult } from "../../../src/messaging/application/outbox-publisher";
-import { OutboxPublisherLoop } from "../../../src/messaging/infrastructure/outbox-publisher.worker";
+import { type CycleStats, PollingLoop } from "../../../../src/shared/infrastructure/polling-loop";
 
-const idle: PublishCycleResult = { claimed: 0, published: 0, failed: 0, skipped: 0 };
-const full = (n: number): PublishCycleResult => ({ ...idle, claimed: n, published: n });
+const idle: CycleStats = { claimed: 0, failed: 0 };
+const full = (n: number): CycleStats => ({ ...idle, claimed: n });
 const gapsOf = (times: number[]): number[] => times.slice(1).map((t, i) => t - (times[i] ?? 0));
 const tick = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
@@ -15,10 +14,10 @@ async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<voi
   }
 }
 
-describe("OutboxPublisherLoop", () => {
+describe("PollingLoop", () => {
   test("repete o ciclo enquanto o lote vem cheio, sem pausar", async () => {
     let calls = 0;
-    const loop = new OutboxPublisherLoop(
+    const loop = new PollingLoop(
       async () => (++calls < 5 ? full(10) : idle),
       10,
       { pollIntervalMs: 60_000 }, // se pausasse entre ciclos cheios, o teste estouraria o prazo
@@ -33,7 +32,7 @@ describe("OutboxPublisherLoop", () => {
 
   test("lote incompleto: dorme o intervalo antes do próximo ciclo", async () => {
     const times: number[] = [];
-    const loop = new OutboxPublisherLoop(
+    const loop = new PollingLoop(
       async () => {
         times.push(Date.now());
         return full(3); // < batchSize
@@ -51,7 +50,7 @@ describe("OutboxPublisherLoop", () => {
 
   test("um erro no ciclo não derruba o laço: tenta de novo", async () => {
     let calls = 0;
-    const loop = new OutboxPublisherLoop(
+    const loop = new PollingLoop(
       async () => {
         calls++;
         if (calls <= 2) throw new Error("postgres caiu");
@@ -70,7 +69,7 @@ describe("OutboxPublisherLoop", () => {
 
   test("pausa depois de erros cresce, mas respeita o teto", async () => {
     const times: number[] = [];
-    const loop = new OutboxPublisherLoop(
+    const loop = new PollingLoop(
       async () => {
         times.push(Date.now());
         throw new Error("sempre falha");
@@ -90,7 +89,7 @@ describe("OutboxPublisherLoop", () => {
 
   test("stop() acorda a pausa na hora, sem esperar o intervalo", async () => {
     let calls = 0;
-    const loop = new OutboxPublisherLoop(
+    const loop = new PollingLoop(
       async () => {
         calls++;
         return idle;
@@ -111,7 +110,7 @@ describe("OutboxPublisherLoop", () => {
   test("stop() espera o ciclo em andamento terminar", async () => {
     let finished = false;
     let inCycle = false;
-    const loop = new OutboxPublisherLoop(
+    const loop = new PollingLoop(
       async () => {
         inCycle = true;
         await tick(80);
@@ -132,7 +131,7 @@ describe("OutboxPublisherLoop", () => {
   test("start() duas vezes não cria dois laços; stop() sem start é inofensivo", async () => {
     let concurrent = 0;
     let peak = 0;
-    const loop = new OutboxPublisherLoop(
+    const loop = new PollingLoop(
       async () => {
         peak = Math.max(peak, ++concurrent);
         await tick(10);
@@ -143,7 +142,7 @@ describe("OutboxPublisherLoop", () => {
       { pollIntervalMs: 5 },
     );
 
-    await new OutboxPublisherLoop(async () => idle, 10, { pollIntervalMs: 5 }).stop();
+    await new PollingLoop(async () => idle, 10, { pollIntervalMs: 5 }).stop();
     loop.start();
     loop.start();
     await tick(80);
@@ -154,7 +153,7 @@ describe("OutboxPublisherLoop", () => {
 
   test("depois de stop() nenhum ciclo novo começa", async () => {
     let calls = 0;
-    const loop = new OutboxPublisherLoop(
+    const loop = new PollingLoop(
       async () => {
         calls++;
         return idle;

@@ -10,7 +10,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 4. Cada requisito do `requirements.md` deve ter pelo menos um teste que o cubra; a coluna **Cobre** indica onde ele nasce.
 5. Mensagem de commit: `<tipo>: <resumo>` (`docs`, `chore`, `feat`, `test`). O texto sugerido de cada milestone é só uma sugestão.
 6. Status: `[ ]` pendente · `[~]` em andamento · `[x]` fechado.
-7. **Mutation check:** feito completo no M7 (caso de uso de apostas) e reduzido no M6 e no M8 (interrompido por decisão do autor). **A partir do M9 não há mais mutation check**: cada milestone fecha com testes de unidade e de integração, e a suíte completa roda no final. Testes, `tsc`, lint e guardas estáticas rodam em **todos** os milestones.
+7. **Mutation check:** feito completo no M7 (caso de uso de apostas) e reduzido no M6 e no M8 (interrompido por decisão do autor). **A partir do M9 não há mais mutation check.** **A partir do M10 os milestones fecham só com testes de unidade** (fakes de portas); a suíte de integração e de concorrência (PostgreSQL e SQS reais, paralelismo real) roda por inteiro na checagem final, no M12. Os testes de integração/concorrência listados nos milestones M10 e M11 passam a ser entregues no M12. `tsc`, lint e guardas estáticas rodam em **todos** os milestones.
 
 ## Visão geral
 
@@ -26,7 +26,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | M7 | Processamento de transações via HTTP (idempotência e concorrência) | [x] |
 | M8 | Outbox publisher e SQS de saída | [x] |
 | M9 | Consumidor SQS (inbox, retry, DLQ, shutdown) | [x] |
-| M10 | Reprocessador de `PENDING_REFERENCE` | [ ] |
+| M10 | Reprocessador de `PENDING_REFERENCE` | [x] |
 | M11 | Observabilidade | [ ] |
 | M12 | Suíte de concorrência multi-instância e recuperação | [ ] |
 | M13 | Docker Compose completo e README | [ ] |

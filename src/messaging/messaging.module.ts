@@ -7,6 +7,7 @@ import {
 import { DatabaseModule } from "../database/database.module";
 import { ENV } from "../shared/infrastructure/config/config.module";
 import type { Env } from "../shared/infrastructure/config/env";
+import { PollingLoop } from "../shared/infrastructure/polling-loop";
 import {
   OUTBOX_PUBLISHER_CONFIG,
   OutboxPublisher,
@@ -14,7 +15,6 @@ import {
 } from "./application/outbox-publisher";
 import { EVENT_PUBLISHER } from "./application/ports/event-publisher";
 import { MessagingPersistenceModule } from "./infrastructure/messaging-persistence.module";
-import { OutboxPublisherLoop } from "./infrastructure/outbox-publisher.worker";
 import { SqsModule } from "./infrastructure/sqs/sqs.module";
 import { SqsEventPublisher } from "./infrastructure/sqs/sqs-event-publisher";
 
@@ -39,7 +39,7 @@ const randomJitter = (): number => 0.8 + Math.random() * 0.4;
   exports: [OutboxPublisher, EVENT_PUBLISHER, SqsModule],
 })
 export class MessagingModule implements OnApplicationBootstrap, BeforeApplicationShutdown {
-  private loop: OutboxPublisherLoop | undefined;
+  private loop: PollingLoop | undefined;
 
   constructor(
     @Inject(ENV) private readonly env: Env,
@@ -49,13 +49,10 @@ export class MessagingModule implements OnApplicationBootstrap, BeforeApplicatio
   /** Só o papel `publisher` liga o laço; `api` sozinho apenas grava na outbox. */
   onApplicationBootstrap(): void {
     if (!this.env.APP_ROLES.has("publisher")) return;
-    this.loop = new OutboxPublisherLoop(
-      () => this.publisher.runOnce(),
-      this.env.OUTBOX_BATCH_SIZE,
-      {
-        pollIntervalMs: this.env.OUTBOX_POLL_INTERVAL_MS,
-      },
-    );
+    this.loop = new PollingLoop(() => this.publisher.runOnce(), this.env.OUTBOX_BATCH_SIZE, {
+      pollIntervalMs: this.env.OUTBOX_POLL_INTERVAL_MS,
+      name: "OutboxPublisher",
+    });
     this.loop.start();
   }
 
