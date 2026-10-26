@@ -871,7 +871,13 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 
 ### 15.4 Deploy local
 
-`docker-compose.yml`: `postgres`, `ministack` (`ministackorg/ministack`, porta 4566; as 3 filas são criadas pelo `ensureQueues()` da aplicação), `migrate` (one-shot), `app` (API, escalável via `--scale app=3` atrás de um proxy simples) e `worker` (consumer + publisher + reprocessor). Tudo da mesma imagem; `bun run test:load` opcional (diferencial).
+`docker-compose.yml` (M13): `postgres`, `ministack` (`ministackorg/ministack`, porta 4566; as filas são criadas pelo `ensureQueues()` da aplicação), `migrate` (one-shot, `scripts/migrate.ts up`; `app` e `worker` dependem de `service_completed_successfully`), `app` (`APP_ROLES=api,consumer`) e `worker` (`APP_ROLES=publisher,reprocessor`, sem porta HTTP). Tudo da mesma imagem (`Dockerfile`, `oven/bun:1.4`, executa o TypeScript direto, usuário não root).
+
+- **Escala.** `--scale app=3` funciona sem proxy: o `ports: "3000-3009:3000"` dá a cada réplica a próxima porta do host (3000, 3001, …). Não há balanceador; é suficiente para provar a correção multi-instância (cada réplica fala com o mesmo PostgreSQL e as mesmas filas). Um balanceador real fica a cargo do orquestrador de produção.
+- **Readiness.** O `app` tem healthcheck em `GET /health/ready` (PostgreSQL e SQS). O `worker` não abre porta; seu ciclo de vida é observado pelas métricas do `app` (`outbox_lag_seconds`, `outbox_pending_total`).
+- **Shutdown.** `stop_grace_period: 40s` > `SHUTDOWN_GRACE_MS` (25 s). Verificado: `docker compose stop` encerra `app` e `worker` com código 0.
+- **Verificação.** `bun run smoke` (`scripts/smoke.ts`) exercita o sistema no ar: HTTP, idempotência, 409, 422, reversão, referência fora de ordem (reprocessador), entrada por SQS (consumidor), reconciliação, eventos (publisher) e métricas. Rodado com `--scale app=3`.
+- **Infra de dev.** `bun run infra:up` sobe só `postgres` e `ministack` para rodar a aplicação no host. A suíte de integração usa `docker-compose.test.yml` (portas próprias, tmpfs).
 
 ### 15.5 D14 — Emulador de SQS: MiniStack (✅ validado)
 
@@ -889,7 +895,7 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 
 ## 16. Interpretações adotadas, limitações e questões em aberto
 
-### Interpretações adotadas (a documentar também no README final)
+### Interpretações adotadas
 
 1. **Reversão única de qualquer tipo** por transação (mais estrita que "mesmo tipo"), para sustentar "sem crédito duplicado". ✅
 2. **`amount` com exatamente 2 casas na entrada** (`"25"` é 400). Evita ambiguidade de hash e nunca arredonda. ✅
@@ -907,12 +913,30 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 - Ordem de eventos publicados não é garantida com múltiplos publishers (mitigada por `walletVersion`).
 - Dedup do FIFO é de 5 min; a correção não depende dela.
 - Head-of-line blocking por `MessageGroupId` enquanto uma mensagem falha.
-- Constraint trigger diferido tem custo por escrita (🟡 medir).
-- Autenticação não implementada.
+- Constraint trigger diferido tem custo por escrita (não medido: não há teste de carga).
+- Autenticação não implementada (§15.3).
+- Sem balanceador no compose: `--scale app=N` expõe uma porta por réplica (§15.4).
+- Eventos publicados e métricas de processamento são por instância/at-least-once; consumidores externos devem deduplicar por `eventId`.
+- MiniStack é um emulador: o comportamento do SQS real (limites, latências, dedup de 5 min) pode diferir; o código usa o SDK padrão, e a correção não depende do broker (AR-03).
+- O teste de carga (`bun run test:load`, RNF-OPT-01) é opcional e **não foi feito**; sem ele não há números de throughput, p50/p95/p99 nem perfil de conflitos de lock.
+
+### Parâmetros finais
+
+Valores padrão (todos configuráveis por ambiente; ver README). Foram escolhidos por raciocínio e validados pela suíte de concorrência (M12), **não** calibrados por medição de carga:
+
+| Parâmetro | Valor | Racional |
+|---|---|---|
+| Isolamento | READ COMMITTED | A serialização vem do lock da wallet, não do isolamento (§5, §7) |
+| `lock_timeout` | 5 s | Falha rápida (`503`) em vez de fila indefinida atrás de uma wallet quente |
+| Retry de transação | 3, só `40001`/`40P01` | Conflitos transitórios; nunca repetir `55P03` internamente |
+| Consumidor | 4 pollers × lote 10, long poll 20 s, backoff de visibilidade 2 s·2ⁿ | Paralelismo entre grupos FIFO (wallets) sem violar a ordem por wallet |
+| Outbox | lote 20, lease 30 s, poll 500 ms | Lease > tempo típico de publicação; crash devolve a mensagem sozinha |
+| `PENDING_REFERENCE` | 10 tentativas, backoff 2 s·2ⁿ (teto 5 min), TTL 1 h, lote 20, lease 60 s | Cobre referências atrasadas por minutos sem reprocessar para sempre (AR-30) |
+| Shutdown | 25 s (container: 40 s) | Termina mensagens em andamento antes do SIGKILL do orquestrador |
 
 ### Questões em aberto
 
-- 🟡 Parâmetros finais (lock_timeout, lease, tamanhos de lote, concorrência do consumer) após o teste de carga.
+- 🟡 Calibrar `lock_timeout`, lease, tamanhos de lote e pollers com um teste de carga, se houver tempo (RNF-OPT-01).
 
 ---
 
@@ -936,3 +960,4 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-26 | M10: reprocessador de `PENDING_REFERENCE` (§10.1). `ReprocessPendingTransactionUseCase` (wallet primeiro, relê sob o lock), `PendingReferenceReprocessor` (claim curto + item a item), configuração por env. `PollingLoop` extraído para `shared/infrastructure` e reaproveitado pelo publisher. **Política de testes:** a partir do M10 os milestones fecham só com testes de unidade; integração e concorrência completas rodam na checagem final (M12). |
 | 2026-10-26 | M11: logs JSON via pino com `RequestContext` (ALS) e redaction profunda, métricas completas e `GET /metrics` (§15.1.1). Porta `WagerMetrics`; `OutboxRepository.backlog()`; `LockConflictReporter` opcional no Unit of Work. Redaction por `sanitizeForLog` em vez de `redact.paths` do pino (cobre qualquer profundidade). |
 | 2026-10-26 | M12: suíte multi-processo (§15.2.1) e primeira checagem completa contra PostgreSQL/MiniStack reais desde o M10. Corrigido o `nest-wiring.test.ts`, quebrado desde o M11 (módulos de persistência passaram a exigir `KernelModule`/`MetricsModule`); a métrica do Unit of Work no `DatabaseModule` virou opcional. |
+| 2026-10-26 | M13+M14: `Dockerfile` e compose completo (§15.4: `migrate` one-shot, `app` escalável por faixa de portas, `worker`), `scripts/smoke.ts` (`bun run smoke`), `README.md` de uso (enunciado movido para `CHALLENGE.md`). Fechamento: limitações, parâmetros finais (§16) e tabela de rastreabilidade em `requirements.md` §8. Teste de carga opcional não feito. |

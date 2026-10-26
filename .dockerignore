@@ -1,0 +1,14 @@
+.git
+.claude
+node_modules
+dist
+coverage
+test
+*.md
+.env
+.env.*
+docker-compose*.yml
+Dockerfile
+.dockerignore
+biome.json
+bunfig.toml

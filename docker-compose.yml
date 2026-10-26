@@ -1,5 +1,18 @@
-# Infra de desenvolvimento. O compose completo (app, worker, migrate) chega no M13.
+# Sistema completo: `docker compose up --build`.
+#   - app:    API HTTP + consumidor SQS (escalável: `docker compose up --build --scale app=3`)
+#   - worker: publisher da outbox + reprocessador de PENDING_REFERENCE (sem HTTP)
+#   - migrate: aplica as migrations e sai (one-shot); app e worker só sobem depois dele
+# Só a infra (desenvolvimento no host): `bun run infra:up` (= postgres + ministack).
 name: wagering
+
+x-app-env: &app-env
+  NODE_ENV: production
+  LOG_LEVEL: info
+  DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering
+  AWS_REGION: us-east-1
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+  SQS_ENDPOINT: http://ministack:4566
 
 services:
   postgres:
@@ -28,6 +41,52 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
+  migrate:
+    build: .
+    image: wagering-app
+    command: ["bun", "run", "scripts/migrate.ts", "up"]
+    environment: *app-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    build: .
+    image: wagering-app
+    environment:
+      <<: *app-env
+      APP_ROLES: api,consumer
+      PORT: "3000"
+    # Faixa de portas no host: cada réplica de `--scale app=N` pega a próxima (3000, 3001, ...).
+    ports:
+      - "3000-3009:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      ministack:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/health/ready').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    stop_grace_period: 40s
+
+  worker:
+    build: .
+    image: wagering-app
+    environment:
+      <<: *app-env
+      APP_ROLES: publisher,reprocessor
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      ministack:
+        condition: service_healthy
+    stop_grace_period: 40s
 
 volumes:
   pgdata:

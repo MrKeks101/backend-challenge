@@ -29,8 +29,8 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | M10 | Reprocessador de `PENDING_REFERENCE` | [x] |
 | M11 | Observabilidade | [x] |
 | M12 | Suíte de concorrência multi-instância e recuperação | [x] |
-| M13 | Docker Compose completo e README | [ ] |
-| M14 | Fechamento da documentação (e teste de carga, opcional) | [ ] |
+| M13 | Docker Compose completo e README | [x] |
+| M14 | Fechamento da documentação (e teste de carga, opcional) | [x] (feitos juntos num só commit; teste de carga não feito) |
 
 ---
 

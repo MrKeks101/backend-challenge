@@ -36,7 +36,8 @@
     "lint:fix": "biome check --write .",
     "test": "bun test test/unit",
     "test:integration": "bun run scripts/test-integration.ts",
-    "infra:up": "docker compose up -d --wait",
+    "smoke": "bun run scripts/smoke.ts",
+    "infra:up": "docker compose up -d --wait postgres ministack",
     "infra:down": "docker compose down",
     "migration:up": "bun run scripts/migrate.ts up",
     "migration:down": "bun run scripts/migrate.ts down"

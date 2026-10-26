@@ -343,3 +343,83 @@ Autenticação não pontua; não deve competir por tempo com as áreas acima.
 11. Métricas: biblioteca (ex.: Prometheus) e exposição.
 12. Autenticação: implementar IdP ou só ponto de extensão.
 13. Estratégia de testes de multi-instância (processos Bun reais contra o mesmo Postgres/LocalStack).
+
+Todas as 13 foram decididas e estão registradas no `ARCHITECTURE.md` (D1–D15); nenhuma permanece em aberto.
+
+---
+
+## 8. Rastreabilidade (requisito → teste)
+
+Verificada no M14 contra o código. Caminhos relativos a `test/`; **U** = unidade (`bun test`), **I** = integração e **C** = concorrência (`bun run test:integration`, PostgreSQL e SQS reais). Itens sem teste automatizado dizem como são verificados.
+
+### Requisitos funcionais
+
+| Requisitos | Onde são provados |
+|---|---|
+| RF-MON-01..08 | U `unit/shared/kernel/money.test.ts`; ida e volta no banco: I `integration/persistence/constraints.test.ts` (`numeric` volta como string) |
+| RF-WAL-01..06 | U `unit/wallet/domain/wallet.test.ts`; I `integration/persistence/constraints.test.ts` (wallets, CHECK, UNIQUE) |
+| RF-WAL-07 | I `integration/persistence/unit-of-work.test.ts` (concorrência real sobre a wallet); C `concurrency/wagering-concurrency.test.ts` |
+| RF-TRX-01..07 | U `unit/wagering/domain/wager-transaction.test.ts`, `failure-code.test.ts`; schema: I `constraints.test.ts` (`wager_transactions`) |
+| RF-LED-01..04 | U `unit/wallet/domain/wallet-ledger-entry.test.ts`; I `constraints.test.ts` (ledger append-only, UNIQUE por transação) |
+| RF-BIZ-01..10 | U `unit/wagering/domain/wager-policy.test.ts`; I `integration/api/wagering-flows.test.ts` |
+| RF-REF-01..03 | U `unit/wagering/application/reprocess-pending.test.ts`, `domain/pending-reference-policy.test.ts`; I `persistence/claim-locking.test.ts`; C `concurrency/multi-instance.test.ts` (referência que nunca chega → `REFERENCE_NOT_FOUND` com evento) |
+| RF-FC-01..03 | U `unit/wagering/domain/failure-code.test.ts`; I `api/wagering-flows.test.ts` (`failureCode` e `providerAction` nas respostas) |
+| RF-CON-01..04 | C `concurrency/wagering-concurrency.test.ts` (cenário obrigatório 100,00 / 2×80,00, repetido 25×), `multi-instance.test.ts` (3 processos) |
+| RF-API-01..06, 12..13 | I `integration/api/wallets.test.ts`; métrica de divergência: U `unit/health.test.ts`, `shared/infrastructure/metrics/metrics.test.ts` |
+| RF-API-07..11 | I `integration/api/wagering-idempotency.test.ts`, `wagering-flows.test.ts`; U `unit/shared/kernel/canonical-json.test.ts`, `shared/interfaces/problem-mapper.test.ts` |
+| RF-API-14 | U `unit/health.test.ts`, `unit/health/readiness.test.ts`; I `integration/messaging/publisher-roles.test.ts` (`/health/ready`) |
+| RF-SQS-01..09 | I `integration/messaging/sqs-queues.test.ts`, `sqs-consumer.test.ts`, `sqs-consumer-failures.test.ts`, `sqs-consumer-lifecycle.test.ts`; U `unit/messaging/sqs-consumer.test.ts`, `unit/wagering/interfaces/wager-message.*.test.ts`, `shared/infrastructure/error-classifier.test.ts` |
+| RF-OUT-01..03 | I `integration/messaging/outbox-publisher.test.ts`, `persistence/unit-of-work.test.ts`; U `unit/messaging/domain/inbox-outbox.test.ts` |
+| RF-OUT-04 | I `outbox-publisher.test.ts` (processo morto depois do commit); C `multi-instance.test.ts` |
+| RF-OUT-05..07 | U `unit/wagering/domain/events.test.ts` |
+| RF-AUTH-01..02 | U `unit/auth/auth.test.ts` (guard no-op, health `@Public`, `ProviderIdentityPort`); decisão em ARCHITECTURE §15.3 |
+
+### Requisitos não funcionais
+
+| Requisitos | Onde são provados |
+|---|---|
+| RNF-STK-01..05, 08 | `package.json`, `bun test`; I `integration/stack-mikro-orm.test.ts`, `stack-sqs.test.ts`; ARCHITECTURE D2, D14 |
+| RNF-STK-06 | `docker-compose.yml` + `bun run smoke` (verificado no M13 com `--scale app=3`) |
+| RNF-STK-07 | I `integration/persistence/migrations.test.ts` (up → down → up; divergência `EntitySchema` × banco) |
+| RNF-DB-01..03 | I `persistence/constraints.test.ts`, `invariant-checker.test.ts`, `repositories.test.ts` |
+| RNF-COR-01..02 | C `multi-instance.test.ts`, `wagering-concurrency.test.ts` |
+| RNF-COR-03..04 | C `multi-instance.test.ts` (SIGKILL antes do COMMIT, depois do COMMIT e antes do ack, 2 de 3 processos); I `outbox-publisher.test.ts` |
+| RNF-COR-05 | I `outbox-publisher.test.ts` (falha do SQS), `sqs-consumer-failures.test.ts` (transitório), `wagering-concurrency.test.ts` (`lock_timeout` → 503) |
+| RNF-COR-06 | I `sqs-consumer-lifecycle.test.ts`; C `multi-instance.test.ts` (shutdown gracioso); `docker compose stop` sai com código 0 |
+| RNF-MOD-01..05 | U `unit/architecture.test.ts` (domínio sem framework/ORM/AWS, aplicação sem infraestrutura), `nest-di.test.ts`, testes de domínio |
+| RNF-OBS-01 | U `unit/shared/infrastructure/observability/logging.test.ts`, `shared/interfaces/http/request-context.test.ts`; C `multi-instance.test.ts` (logs JSON) |
+| RNF-OBS-02 | U `unit/shared/infrastructure/metrics/metrics.test.ts`, `unit/wagering/application/observability.test.ts`; C `multi-instance.test.ts` (métricas coerentes) |
+| RNF-OBS-03 | U `unit/health.test.ts`, `unit/health/readiness.test.ts` |
+| RNF-TST-01..05 | Esta tabela; invariante final: `persistence/invariant-checker.test.ts` usado ao fim dos cenários C; determinismo: suíte repetida sem falhas (M12) |
+| RNF-DOC-01..02 | `README.md`, `ARCHITECTURE.md` (revisado no M14) |
+| RNF-OPT-01 | **Não feito** (opcional); registrado em ARCHITECTURE §16 |
+| RNF-OPT-02 | Não feito (opcional) |
+
+Os 8 cenários de concorrência de RNF-TST-03: (1) `wagering-concurrency` e `multi-instance` (50×); (2) `wagering-concurrency` (RF-CON-04); (3) ambos (wallets distintas); (4) `multi-instance` (3 processos); (5) `multi-instance` (SIGKILL depois do commit e antes do ack); (6) `multi-instance` e `outbox-publisher` (publishers concorrentes); (7) `multi-instance` (REFUND/ROLLBACK antes da referência); (8) `multi-instance` (reinício com processo substituto).
+
+### Antirrequisitos
+
+| AR | Garantia |
+|---|---|
+| AR-01 | U `unit/architecture.test.ts` (sem `parseFloat/parseInt/Number()/toFixed` em `src/`); `Money` em `bigint` |
+| AR-02, AR-54 | Idempotência, inbox e outbox só no banco: I `repositories.test.ts`, C 50× em paralelo |
+| AR-03, AR-09, AR-13 | Constraints e triggers do schema: I `constraints.test.ts` |
+| AR-04, AR-51 | I `outbox-publisher.test.ts` (publicação só depois do commit; outbox na mesma transação) |
+| AR-05, AR-21 | I `constraints.test.ts` (UPDATE/DELETE/TRUNCATE falham); U `wallet-ledger-entry.test.ts` |
+| AR-06 | C `wagering-concurrency.test.ts` (wallet travada não bloqueia as outras); U `architecture.test.ts` (`FOR UPDATE` só com `SKIP LOCKED` ou `FOR NO KEY UPDATE` de wallet) |
+| AR-07, AR-08 | C `wagering-concurrency.test.ts`, `multi-instance.test.ts` |
+| AR-10 | `package.json` (sem Prisma/TypeORM) |
+| AR-11..12, AR-14..20, AR-22..27 | U `wager-transaction.test.ts`, `wager-policy.test.ts`, `wallet.test.ts`, `money.test.ts`; I `constraints.test.ts`, `wagering-flows.test.ts` |
+| AR-28..32 | U `failure-code.test.ts`, `events.test.ts`, `reprocess-pending.test.ts`; C `multi-instance.test.ts` |
+| AR-33..34 | U `architecture.test.ts`, testes de domínio (construtores privados) |
+| AR-35..36 | U `auth.test.ts`; sem tabela de usuários no schema |
+| AR-37..43 | I `wagering-idempotency.test.ts` (mapeamento consistente), `wallets.test.ts`; U `canonical-json.test.ts`, `ledger-cursor.test.ts` |
+| AR-44..50 | I `sqs-consumer*.test.ts`; U `unit/messaging/sqs-consumer.test.ts`, `error-classifier.test.ts` (mesmo use case, ack após commit, classificação) |
+| AR-52..53 | I `outbox-publisher.test.ts`, `claim-locking.test.ts`; C `multi-instance.test.ts` |
+| AR-55..56 | U `observability/logging.test.ts` (redaction, `correlationId`) |
+| AR-57..58, AR-60 | Todas as suítes I e C usam PostgreSQL/SQS reais e paralelismo real; repetidas sem falhas |
+| AR-59 | I `migrations.test.ts` |
+
+### Falhas eliminatórias
+
+FE-01 → AR-01 · FE-02 → `wagering-concurrency` (30 apostas contra 100,00) · FE-03 → 50× em paralelo e redelivery · FE-04 → restart no `multi-instance` · FE-05 → 3 processos · FE-06 → `outbox-publisher` · FE-07 → ledger append-only + reconciliação · FE-08 → suítes I e C sem mocks de PostgreSQL/SQS.
