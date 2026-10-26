@@ -1,19 +1,10 @@
 import { z } from "zod";
-import { isUuid } from "../../../shared/kernel";
-
-const uuid = z.string().refine(isUuid, "must be a UUID");
-
-const money = z
-  .object({
-    amount: z.string().max(40),
-    currency: z.string().max(3),
-  })
-  .strict();
+import { moneyInput, uuid } from "../../../shared/interfaces/http/schemas";
 
 export const createWalletBody = z
   .object({
     playerId: uuid,
-    initialBalance: money,
+    initialBalance: moneyInput,
   })
   .strict();
 

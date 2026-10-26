@@ -1,6 +1,12 @@
 export const UNIT_OF_WORK = Symbol("UnitOfWork");
 
 export interface UnitOfWorkOptions {
+  /**
+   * Repetições EXTRAS (além da 1ª execução) quando a transação é desfeita por deadlock (`40P01`)
+   * ou falha de serialização (`40001`) — nenhum outro erro é repetido. Padrão 0. Cada repetição
+   * roda `fn` de novo numa transação nova: `fn` não pode reaproveitar objetos já mutados.
+   */
+  retryOnConflict?: number;
   /** Nível de isolamento da transação (padrão `READ COMMITTED`). `REPEATABLE READ` dá um snapshot único. */
   isolation?: "READ COMMITTED" | "REPEATABLE READ";
   /** Tempo máximo esperando um lock de linha (padrão 5000 ms). */

@@ -10,7 +10,7 @@ import {
   WalletBalanceChanged,
 } from "../../../../src/wagering/domain";
 import { LedgerDirection, WalletLedgerEntry } from "../../../../src/wallet/domain";
-import { brl } from "../../../support/money";
+import { brl, usd } from "../../../support/money";
 import { at, eventContext, makeProcessed, makeTx, makeWallet, T0 } from "../../../support/wagering";
 
 describe("WagerTransactionProcessed", () => {
@@ -54,8 +54,16 @@ describe("WagerTransactionRejected", () => {
     const event = WagerTransactionRejected.from(tx, eventContext());
     expect(event.eventType).toBe("WagerTransactionRejected");
     expect(event.data.failureCode).toBe("INSUFFICIENT_FUNDS");
-    expect(event.data.balance.amount).toBe("100.00");
+    expect(event.data.balance?.amount).toBe("100.00");
     expect(event.data.rejectedAt).toBe(at(3).toISOString());
+  });
+
+  test("CURRENCY_MISMATCH: o saldo está em outra moeda, então vai como null", () => {
+    const tx = makeTx({ money: usd("5.00") });
+    tx.reject(FailureCode.CurrencyMismatch, brl("100.00"), at(3));
+    const event = WagerTransactionRejected.from(tx, eventContext());
+    expect(event.data.failureCode).toBe("CURRENCY_MISMATCH");
+    expect(event.data.balance).toBeNull();
   });
 
   test("exige transação REJECTED", () => {

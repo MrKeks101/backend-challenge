@@ -287,3 +287,133 @@ describe("mistura concorrente de tipos sobre várias wallets (semente fixa)", ()
     await expectInvariants(db);
   });
 });
+
+describe("UnitOfWork.run: retryOnConflict (só 40001/40P01)", () => {
+  /** Duas transações travando duas wallets em ordem oposta: deadlock garantido na 1ª rodada. */
+  async function crossLocks(retryOnConflict?: number) {
+    const a = await openWalletInDb(db, "1.00");
+    const b = await openWalletInDb(db, "1.00");
+    const lock = (id: string) =>
+      db.uow.current().execute("SELECT id FROM wallets WHERE id = ? FOR UPDATE", [id]);
+    let attempts = 0;
+    let arrived = 0;
+    let open!: () => void;
+    const bothHoldFirstLock = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const run = (first: string, second: string) =>
+      db.uow.run(
+        async () => {
+          attempts++;
+          await lock(first);
+          if (++arrived >= 2) open(); // só a 1ª rodada espera; depois a promessa já está resolvida
+          await bothHoldFirstLock;
+          await lock(second);
+          return "ok";
+        },
+        retryOnConflict === undefined ? {} : { retryOnConflict },
+      );
+    const results = await Promise.allSettled([run(a.id, b.id), run(b.id, a.id)]);
+    return { results, attempts };
+  }
+
+  test("sem retry, o deadlock derruba uma das transações (40P01, transitório)", async () => {
+    const { results, attempts } = await crossLocks();
+    const rejected = results.filter((r) => r.status === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(classifyError((rejected[0] as PromiseRejectedResult).reason)).toMatchObject({
+      kind: "TRANSIENT",
+      sqlState: "40P01",
+    });
+    expect(attempts).toBe(2);
+  });
+
+  test("com retry, a transação derrubada é refeita e as duas terminam", async () => {
+    const { results, attempts } = await crossLocks(2);
+    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(attempts).toBeGreaterThanOrEqual(3);
+  });
+
+  const failWith = (code: string) => Object.assign(new Error("simulated"), { code });
+
+  test("repete 40001 e 40P01 até esgotar as repetições e então propaga o erro", async () => {
+    for (const code of ["40001", "40P01"]) {
+      let attempts = 0;
+      await expect(
+        db.uow.run(
+          async () => {
+            attempts++;
+            throw failWith(code);
+          },
+          { retryOnConflict: 2 },
+        ),
+      ).rejects.toMatchObject({ code });
+      expect(attempts).toBe(3); // 1ª execução + 2 repetições
+    }
+  });
+
+  test("não repete lock_timeout (55P03), erros permanentes nem erros de negócio", async () => {
+    for (const error of [failWith("55P03"), failWith("23514"), new Error("boom")]) {
+      let attempts = 0;
+      await expect(
+        db.uow.run(
+          async () => {
+            attempts++;
+            throw error;
+          },
+          { retryOnConflict: 5 },
+        ),
+      ).rejects.toBe(error);
+      expect(attempts).toBe(1);
+    }
+  });
+
+  test("por padrão não repete nada", async () => {
+    let attempts = 0;
+    await expect(
+      db.uow.run(async () => {
+        attempts++;
+        throw failWith("40001");
+      }),
+    ).rejects.toBeDefined();
+    expect(attempts).toBe(1);
+  });
+
+  test("se a repetição der certo, devolve o valor e só a execução final fica gravada", async () => {
+    const wallet = await openWalletInDb(db, "50.00");
+    let attempts = 0;
+    const result = await db.uow.run(
+      async () => {
+        attempts++;
+        await applyInDbOnce(wallet.id, attempts);
+        if (attempts === 1) throw failWith("40P01");
+        return attempts;
+      },
+      { retryOnConflict: 1 },
+    );
+    expect(result).toBe(2);
+    const rows = await db.sql<{ n: string }[]>(
+      "SELECT count(*)::text AS n FROM inbox_messages WHERE consumer_name = ?",
+      [`retry-${wallet.id}`],
+    );
+    expect(rows[0]?.n).toBe("1"); // a 1ª rodada foi desfeita por inteiro (rollback)
+  });
+
+  test("retryOnConflict inválido é recusado", async () => {
+    for (const bad of [-1, 1.5, Number.NaN]) {
+      await expect(db.uow.run(async () => 1, { retryOnConflict: bad })).rejects.toBeInstanceOf(
+        InvalidArgumentError,
+      );
+    }
+  });
+
+  /** Grava uma linha de inbox dentro da transação corrente (a mesma chave a cada tentativa). */
+  async function applyInDbOnce(walletId: string, attempt: number) {
+    await db.uow
+      .current()
+      .execute(
+        "INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at) VALUES (?, ?, repeat('a', 64), now()) ON CONFLICT DO NOTHING",
+        [`retry-${walletId}`, `m-${attempt}`],
+      );
+  }
+});

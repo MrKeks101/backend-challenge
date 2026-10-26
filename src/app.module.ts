@@ -7,10 +7,19 @@ import { KernelModule } from "./shared/infrastructure/kernel.module";
 import { MetricsModule } from "./shared/infrastructure/metrics/metrics.module";
 import { CorrelationMiddleware } from "./shared/interfaces/http/correlation";
 import { ProblemDetailsFilter } from "./shared/interfaces/http/problem-details.filter";
+import { WageringModule } from "./wagering/wagering.module";
 import { WalletModule } from "./wallet/wallet.module";
 
 @Module({
-  imports: [ConfigModule, KernelModule, MetricsModule, AuthModule, HealthModule, WalletModule],
+  imports: [
+    ConfigModule,
+    KernelModule,
+    MetricsModule,
+    AuthModule,
+    HealthModule,
+    WalletModule,
+    WageringModule,
+  ],
   providers: [{ provide: APP_FILTER, useClass: ProblemDetailsFilter }],
 })
 export class AppModule implements NestModule {

@@ -744,6 +744,26 @@ Validação na borda (schema) + `Money.from` + checagem de enum, rejeitando camp
 - **Unit of Work.** Ganhou a opção `isolation` (`READ COMMITTED` padrão | `REPEATABLE READ`).
 - **Métricas.** `AppMetrics` (prom-client) nasce com `reconciliation_divergences_total`; o M11 acrescenta as demais e o endpoint `/metrics`.
 
+### 13.5 Contrato do processamento de transações (M7)
+
+`POST /wagering/transactions` (header `Idempotency-Key` obrigatório) chama `ProcessWagerTransactionUseCase`, que implementa o fluxo do §7 sem desvios. Resposta (a mesma na 1ª execução e no replay: o status descreve o **estado** da transação):
+
+| Estado | HTTP | Corpo |
+|---|---|---|
+| `PROCESSED` | 200 | `{ transactionId, status, balance, idempotentReplay }` |
+| `PENDING_REFERENCE` | 202 + `Location` | idem, com `balance: null` |
+| `REJECTED` | 422 | idem + `failureCode` + `providerAction` (RF-FC-02) |
+| `FAILED` | 500 | idem + `failureCode` + `providerAction` (só alcançável a partir do M9/M10) |
+
+- **Validação antes da transação (§7.1).** O comando é validado e a wallet é checada (404) antes de abrir a transação; nada é gravado nesses casos. Erros de forma (`kind` inválido, `OPENING`, `REFUND` sem referência, auto-referência, valor mal formado, campo desconhecido) são 400 `INVALID_PAYLOAD` com `errors[]`; header ausente ou vazio é 400 `MISSING_IDEMPOTENCY_KEY`; header acima de 200 caracteres ou não imprimível é 400 `INVALID_PAYLOAD`.
+- **Idempotência (§6).** `INSERT … ON CONFLICT DO NOTHING` é o árbitro. Sem linha criada: busca por key → mesmo `payloadHash` = replay; hash diferente = 409 `IDEMPOTENCY_KEY_CONFLICT`. Sem key mas com o par `(provider, externalId)` já usado = 409 `EXTERNAL_TRANSACTION_ID_CONFLICT`. O replay devolve o `observed_balance` gravado (AR-29), nunca o saldo atual.
+- **Rejeição é resultado, não exceção.** `REJECTED` é commitada (auditável); só erro de infraestrutura causa rollback.
+- **Aplicação do desfecho** (`WagerOutcomeApplier`): saldo (`UPDATE … WHERE version`) → lançamento → estado da transação → eventos da outbox → acordar dependentes. É a mesma peça que o reprocessador do M10 usará. `wakeDependents` roda após `PROCESSED` **e** `REJECTED` (uma referência rejeitada também resolve quem a esperava, para `REFERENCE_NOT_PROCESSED`). Eventos: `PROCESSED` → `WagerTransactionProcessed` (+ `WalletBalanceChanged` se moveu saldo); `REJECTED` → `WagerTransactionRejected`; primeira espera → `WagerTransactionPendingReference`.
+- **Concorrência.** Wallet travada com `FOR NO KEY UPDATE` (§5.2) **depois** do claim (§7.2). `UnitOfWork.run(…, { retryOnConflict: 3 })` repete a transação inteira **somente** em `40001`/`40P01`, refazendo o aggregate a cada rodada. `55P03` (lock_timeout, 5 s) **não** é repetido internamente: vira 503 com `Retry-After`, e reenviar com a mesma key é seguro (nada foi gravado).
+- **Para o M9.** `processInTransaction` é público para o consumidor SQS rodar o mesmo fluxo dentro da transação que também grava a inbox; o retry de conflito fica então no consumidor, que é quem abre a transação.
+- **Revisão do §9.3 — `CURRENCY_MISMATCH` não tem saldo observado.** O saldo observado é guardado sem moeda própria (a da transação). Numa transação USD contra uma wallet BRL o saldo da wallet não é representável, então `WagerTransaction.reject` o deixa ausente nesse código (e só nele; nos demais, saldo em outra moeda continua sendo erro). Resultado: `balance: null` na resposta e no evento `WagerTransactionRejected` (`balance: MoneyProps | null`). Achado quando o teste ponta a ponta exercitou o caso: o domínio recusava gravar a rejeição e o provedor recebia 400 em vez de 422.
+- **Consultas.** `GET /wagering/transactions/:id` e `GET /providers/:providerId/wagering/transactions/:externalId` devolvem o estado completo (incluindo `failureCode`, `providerAction`, `attempts`, `nextAttemptAt`); `REJECTED` consultada é 200. 404 `TRANSACTION_NOT_FOUND`.
+
 ---
 
 ## 14. D12 — Estrutura de módulos e camadas
@@ -861,3 +881,4 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-24 | M4: domínio de Wagering (§9.4), eventos de integração, `InboxMessage`/`OutboxMessage`. Kernel ganhou `backoff`, `plain-json` e `IntegrationEvent`. Detalhes decididos: ordem das verificações da política, `providerActionFor`, TTL inclusivo. |
 | 2026-10-24 | M5: persistência (§8.5). `TableDef` como fonte única de schema; migrations SQL à mão (tabelas + triggers); repositórios, `UnitOfWork`, `ErrorClassifier`, invariant checker. **Revisão do D3 (§5.2):** `FOR NO KEY UPDATE` no lugar de `FOR UPDATE`, após deadlock real entre o `KEY SHARE` das FKs e o lock da wallet. Achado: `em.execute` devolve `timestamptz` como texto. |
 | 2026-10-26 | M6: API de wallets (§13.4). Porta `OpeningRecorder` entre os contextos; cursor opaco por `seq`; reconciliação em `REPEATABLE READ`; `problem+json` global com `toProblem` puro; `AuthGuard` no-op. `UnitOfWork` ganhou `isolation`. Política de mutation check proporcional ao risco registrada em `milestones.md`. |
+| 2026-10-26 | M7: processamento idempotente e concorrente via HTTP (§13.5). `WagerOutcomeApplier` compartilhável com o reprocessador; `UnitOfWork` ganhou `retryOnConflict` (só `40001`/`40P01`). **Revisão do §9.3:** `CURRENCY_MISMATCH` não guarda saldo observado (a wallet está em outra moeda), então `balance` é `null` na resposta e no evento; achado pelo teste ponta a ponta (antes dava 400 em vez de 422). Mutation check completo: 33 mutantes, todos mortos ou equivalentes. |

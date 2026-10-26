@@ -38,6 +38,9 @@ const DOMAIN_STATUS: Readonly<Record<string, number>> = {
   WALLET_NOT_FOUND: 404,
   WALLET_ALREADY_EXISTS: 409,
   INVALID_CURSOR: 400,
+  TRANSACTION_NOT_FOUND: 404,
+  IDEMPOTENCY_KEY_CONFLICT: 409,
+  EXTERNAL_TRANSACTION_ID_CONFLICT: 409,
 };
 
 /** Entrada malformada que o domínio detecta ao construir objetos: é problema do payload. */
@@ -45,7 +48,8 @@ const isInputError = (error: DomainError): boolean =>
   error instanceof InvalidMoneyError ||
   error instanceof MoneyOverflowError ||
   error instanceof InvalidArgumentError ||
-  error.code === "INVALID_WALLET";
+  error.code === "INVALID_WALLET" ||
+  error.code === "INVALID_WAGER_TRANSACTION";
 
 const RETRY_AFTER_SECONDS = "1";
 

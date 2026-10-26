@@ -23,7 +23,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | M4 | Domínio de Wagering, Inbox/Outbox e eventos | [x] |
 | M5 | Persistência: migrations, schema e repositórios | [x] |
 | M6 | Wallets: casos de uso e API HTTP | [x] |
-| M7 | Processamento de transações via HTTP (idempotência e concorrência) | [ ] |
+| M7 | Processamento de transações via HTTP (idempotência e concorrência) | [x] |
 | M8 | Outbox publisher e SQS de saída | [ ] |
 | M9 | Consumidor SQS (inbox, retry, DLQ, shutdown) | [ ] |
 | M10 | Reprocessador de `PENDING_REFERENCE` | [ ] |

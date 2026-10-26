@@ -541,6 +541,28 @@ describe("WagerTransaction — reject e fail (códigos estáveis, RF-FC)", () =>
   });
 });
 
+describe("rejeição por CURRENCY_MISMATCH", () => {
+  test("o saldo da wallet (outra moeda) não é representável: fica ausente", () => {
+    const tx = makeTx({ money: usd("5.00") });
+    tx.reject(FailureCode.CurrencyMismatch, brl("100.00"), at(2));
+    expect(tx.status).toBe(Status.Rejected);
+    expect(tx.failureCode).toBe(FailureCode.CurrencyMismatch);
+    expect(tx.observedBalance).toBeUndefined();
+  });
+
+  test("com a mesma moeda o saldo observado é guardado normalmente", () => {
+    const tx = makeTx();
+    tx.reject(FailureCode.InsufficientFunds, brl("3.00"), at(2));
+    expect(tx.observedBalance?.toString()).toBe("3.00 BRL");
+  });
+
+  test("só CURRENCY_MISMATCH admite saldo em outra moeda; os demais códigos continuam recusando", () => {
+    for (const code of [FailureCode.PlayerWalletMismatch, FailureCode.AlreadyReversed]) {
+      expect(() => makeTx().reject(code, usd("1.00"), at(1))).toThrow(InvalidWagerTransactionError);
+    }
+  });
+});
+
 describe("WagerTransaction.rehydrate (RNF-MOD-02)", () => {
   const state = () => {
     const tx = inStatus(Status.Processed);

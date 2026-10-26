@@ -51,7 +51,8 @@ export class WagerTransactionProcessed extends IntegrationEvent<WagerTransaction
 
 export interface WagerTransactionRejectedData extends TransactionSummary {
   failureCode: string;
-  balance: MoneyProps;
+  /** `null` só em CURRENCY_MISMATCH: o saldo da wallet está em outra moeda. */
+  balance: MoneyProps | null;
   rejectedAt: string;
 }
 
@@ -70,7 +71,7 @@ export class WagerTransactionRejected extends IntegrationEvent<WagerTransactionR
       data: {
         ...summarize(transaction),
         failureCode,
-        balance: requireObservedBalance(transaction),
+        balance: transaction.observedBalance?.toJSON() ?? null,
         rejectedAt: requireProcessedAt(transaction),
       },
     });

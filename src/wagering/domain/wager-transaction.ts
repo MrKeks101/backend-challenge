@@ -7,7 +7,7 @@ import {
 } from "../../shared/kernel";
 import { LedgerDirection } from "../../wallet/domain";
 import { InvalidWagerTransactionError } from "./errors";
-import { FAILURE_CODES, type FailureCode, REJECTION_CODES } from "./failure-code";
+import { FAILURE_CODES, FailureCode, REJECTION_CODES } from "./failure-code";
 import { computePayloadHash } from "./payload-hash";
 import { WagerTransactionKind } from "./wager-transaction-kind";
 import { WagerTransactionStatus } from "./wager-transaction-status";
@@ -333,10 +333,15 @@ export class WagerTransaction {
       throw new InvalidArgumentError("failure code is not a business rejection code");
     }
     const when = requireDate(at, "at");
-    this.assertObservedBalance(observedBalance);
+    // O saldo observado é guardado sem moeda própria (a da transação). Em CURRENCY_MISMATCH o saldo
+    // da wallet está em OUTRA moeda: não é representável como saldo desta transação e fica ausente.
+    const otherCurrency = observedBalance.currency !== this.money.currency;
+    if (otherCurrency && code !== FailureCode.CurrencyMismatch) {
+      this.assertObservedBalance(observedBalance);
+    }
     this._status = WagerTransactionStatus.Rejected;
     this._failureCode = code;
-    this._observedBalance = observedBalance;
+    this._observedBalance = otherCurrency ? undefined : observedBalance;
     this._processedAt = when;
     this._nextAttemptAt = undefined;
   }

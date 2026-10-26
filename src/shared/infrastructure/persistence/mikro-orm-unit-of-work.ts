@@ -2,7 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { IsolationLevel } from "@mikro-orm/core";
 import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import type { UnitOfWork, UnitOfWorkOptions } from "../../application/unit-of-work";
-import { InvalidArgumentError } from "../../kernel";
+import { type BackoffConfig, backoffDelayMs, InvalidArgumentError } from "../../kernel";
+import { classifyError } from "./error-classifier";
 import { NoTransactionError } from "./errors";
 
 const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
@@ -11,6 +12,17 @@ const DEFAULT_STATEMENT_TIMEOUT_MS = 15_000;
 interface Ambient {
   em: EntityManager;
 }
+
+const CONFLICT_BACKOFF: BackoffConfig = { baseMs: 20, capMs: 200 };
+/** Só estes dois SQLSTATEs significam "o PostgreSQL desfez a transação; refazer é seguro". */
+const CONFLICT_STATES: ReadonlySet<string> = new Set(["40001", "40P01"]);
+
+const isConflictAbort = (error: unknown): boolean => {
+  const { sqlState } = classifyError(error);
+  return sqlState !== undefined && CONFLICT_STATES.has(sqlState);
+};
+
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 function positiveInt(value: number, name: string): number {
   if (!Number.isInteger(value) || value <= 0) {
@@ -46,15 +58,31 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
         ? IsolationLevel.REPEATABLE_READ
         : IsolationLevel.READ_COMMITTED;
 
-    return this.orm.em.fork().transactional(
-      async (em) => {
-        // SET LOCAL não aceita parâmetros: os valores são inteiros validados acima.
-        await em.execute(`SET LOCAL lock_timeout = ${lockTimeout}`);
-        await em.execute(`SET LOCAL statement_timeout = ${statementTimeout}`);
-        return this.storage.run({ em: em as EntityManager }, fn);
-      },
-      { isolationLevel },
-    );
+    const retries = options.retryOnConflict ?? 0;
+    if (!Number.isInteger(retries) || retries < 0) {
+      throw new InvalidArgumentError("retryOnConflict must be a non-negative integer");
+    }
+
+    const attempt = () =>
+      this.orm.em.fork().transactional(
+        async (em) => {
+          // SET LOCAL não aceita parâmetros: os valores são inteiros validados acima.
+          await em.execute(`SET LOCAL lock_timeout = ${lockTimeout}`);
+          await em.execute(`SET LOCAL statement_timeout = ${statementTimeout}`);
+          return this.storage.run({ em: em as EntityManager }, fn);
+        },
+        { isolationLevel },
+      );
+
+    for (let failures = 0; ; failures++) {
+      try {
+        return await attempt();
+      } catch (error) {
+        if (failures >= retries || !isConflictAbort(error)) throw error;
+        // Jitter para os concorrentes derrubados não colidirem de novo no mesmo instante.
+        await sleep(backoffDelayMs(failures + 1, CONFLICT_BACKOFF, 0.5 + Math.random()));
+      }
+    }
   }
 
   /** `EntityManager` da transação em curso; fora de uma, um `em` novo (cada comando em autocommit). */
