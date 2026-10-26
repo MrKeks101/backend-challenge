@@ -1,3 +1,4 @@
+import type { Money } from "../../../shared/kernel";
 import type { Wallet, WalletLedgerEntry } from "../../domain";
 
 export const WALLET_REPOSITORY = Symbol("WalletRepository");
@@ -29,6 +30,13 @@ export interface LedgerPage {
   nextBeforeSeq: string | null;
 }
 
+/** Totais do ledger de uma wallet, para a reconciliação. */
+export interface LedgerSummary {
+  entries: number;
+  /** Créditos − débitos (pode ser negativo se o ledger estiver corrompido). */
+  net: Money;
+}
+
 export interface LedgerRepository {
   /** Append-only: não existe update nem delete. */
   append(entry: WalletLedgerEntry): Promise<void>;
@@ -36,4 +44,6 @@ export interface LedgerRepository {
   findLast(walletId: string): Promise<WalletLedgerEntry | null>;
   /** Do mais novo para o mais antigo; `beforeSeq` exclusivo. */
   page(walletId: string, options: { limit: number; beforeSeq?: string }): Promise<LedgerPage>;
+  /** Soma o ledger inteiro da wallet no banco (uma consulta). `currency` é a moeda da wallet. */
+  summarize(walletId: string, currency: string): Promise<LedgerSummary>;
 }

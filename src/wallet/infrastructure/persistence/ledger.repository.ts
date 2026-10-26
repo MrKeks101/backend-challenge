@@ -5,8 +5,12 @@ import {
   UNIT_OF_WORK_IMPL,
 } from "../../../shared/infrastructure/persistence/mikro-orm-unit-of-work";
 import { insertStatement, selectList } from "../../../shared/infrastructure/persistence/table-def";
-import { InvalidArgumentError } from "../../../shared/kernel";
-import type { LedgerPage, LedgerRepository } from "../../application/ports/wallet-repositories";
+import { InvalidArgumentError, Money } from "../../../shared/kernel";
+import type {
+  LedgerPage,
+  LedgerRepository,
+  LedgerSummary,
+} from "../../application/ports/wallet-repositories";
 import type { WalletLedgerEntry } from "../../domain";
 import { ledgerTable } from "./tables";
 import { type LedgerEntryRecord, ledgerMapper } from "./wallet.mapper";
@@ -70,5 +74,20 @@ export class MikroOrmLedgerRepository implements LedgerRepository {
       entry: ledgerMapper.toDomain(row),
     }));
     return { items, nextBeforeSeq: hasMore ? (items.at(-1)?.seq ?? null) : null };
+  }
+
+  async summarize(walletId: string, currency: string): Promise<LedgerSummary> {
+    const rows = await this.uow.current().execute<{ entries: string; net: string }[]>(
+      `SELECT count(*)::text AS entries,
+              COALESCE(SUM(CASE direction WHEN 'CREDIT' THEN amount ELSE -amount END), 0)::numeric(38,2)::text AS net
+         FROM ${T} WHERE wallet_id = ?`,
+      [walletId],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("ledger summary returned no row");
+    const negative = row.net.startsWith("-");
+    const magnitude = Money.from({ amount: negative ? row.net.slice(1) : row.net, currency });
+    const entries = Number(row.entries); // allow-number: contagem de linhas, não é dinheiro
+    return { entries, net: negative ? magnitude.negate() : magnitude };
   }
 }

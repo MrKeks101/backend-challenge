@@ -126,6 +126,38 @@ describe("LedgerRepository", () => {
     expect(await db.ledger.findByTransaction(wallet.id, db.ids.next())).toBeNull();
   });
 
+  describe("summarize (base da reconciliação)", () => {
+    test("soma créditos − débitos e conta os lançamentos", async () => {
+      const wallet = await openWalletInDb(db, "100.00");
+      const bet = newTx(db, wallet, { money: brl("30.00") });
+      await applyInDb(db, bet);
+      await applyInDb(
+        db,
+        newTx(db, wallet, {
+          kind: Kind.Win,
+          money: brl("12.50"),
+          referenceExternalTransactionId: bet.externalTransactionId,
+        }),
+      );
+      const summary = await db.ledger.summarize(wallet.id, "BRL");
+      expect(summary.entries).toBe(3);
+      expect(summary.net.toString()).toBe("82.50 BRL");
+    });
+
+    test("sem lançamentos: zero lançamentos e soma 0.00", async () => {
+      const wallet = await openWalletInDb(db, "0.00");
+      const summary = await db.ledger.summarize(wallet.id, "BRL");
+      expect(summary.entries).toBe(0);
+      expect(summary.net.toString()).toBe("0.00 BRL");
+    });
+
+    test("só soma a wallet pedida", async () => {
+      const a = await openWalletInDb(db, "10.00");
+      await openWalletInDb(db, "999.00");
+      expect((await db.ledger.summarize(a.id, "BRL")).net.toString()).toBe("10.00 BRL");
+    });
+  });
+
   describe("paginação por cursor", () => {
     let wallet: Wallet;
     beforeAll(async () => {

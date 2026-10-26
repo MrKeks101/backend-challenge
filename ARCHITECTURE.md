@@ -724,6 +724,26 @@ Erros em `application/problem+json` (RFC 9457) com campos extras `code` (estáve
 
 Validação na borda (schema) + `Money.from` + checagem de enum, rejeitando campos desconhecidos. Campo opcional `referenceExternalTransactionId` no body HTTP e em `data` da mensagem SQS. `kind = OPENING` ⇒ 400. O header é a fonte da key; se o body trouxer `idempotencyKey` divergente (SQS), prevalece o campo da mensagem como "header" equivalente.
 
+### 13.4 Contrato da API de wallets (M6)
+
+| Endpoint | Sucesso | Erros |
+|---|---|---|
+| `POST /wallets` | **201** + `Location: /wallets/{id}`, corpo `{ id, playerId, balance, version }` | 400 `INVALID_PAYLOAD` · 409 `WALLET_ALREADY_EXISTS` · 413 · 503 |
+| `GET /wallets/:walletId` | 200, o corpo do POST + `createdAt`/`updatedAt` | 400 (id não UUID) · 404 `WALLET_NOT_FOUND` |
+| `GET /wallets/:walletId/ledger?cursor&limit` | 200 `{ items[], nextCursor }` | 400 `INVALID_PAYLOAD` (`limit`) · 400 `INVALID_CURSOR` · 404 |
+| `POST /wallets/:walletId/reconciliation` | **200**, com `consistent` true/false | 400 · 404 |
+
+- **Criação (RF-API-01/02, AR-15).** Uma só transação SQL: `INSERT wallets … ON CONFLICT DO NOTHING` → transação `OPENING` (`PROCESSED`) → lançamento `CREDIT` → 2 linhas na outbox (`WagerTransactionProcessed` + `WalletBalanceChanged`, `message_group_id = walletId`). A ordem é imposta pela FK do ledger (a transação precisa existir antes do lançamento). Sob criação concorrente, o banco decide: uma vence, as demais recebem 409 sem gravar nada. Saldo inicial zero cria só a wallet. A **moeda** é a do saldo inicial (uma wallet por `(playerId, moeda)`).
+- **Fronteira entre contextos.** O `wallet` não conhece a transação `OPENING`: define a porta `OpeningRecorder` (`wallet/application/ports`), implementada pelo `wagering` (`WageringOpeningRecorder`), que cria a transação e enfileira os eventos.
+- **Paginação (RF-API-04, AR-41).** Ordem do mais novo ao mais antigo por `seq` (identity do ledger). O cursor é **opaco** (base64url de `{v,w,s}`) e **estável**: aponta para o último `seq` entregue, então lançamentos novos nunca deslocam páginas já lidas. Como `seq` é atribuído sob o lock da wallet, a ordem de `seq` coincide com a de commit **por wallet**. O cursor carrega a wallet e é recusado em outra (`INVALID_CURSOR`); não é assinado (adulterá-lo só muda a posição de leitura de dados já acessíveis). `limit`: 1–200, padrão 50; fora disso é 400 (não há clamp silencioso).
+- **Reconciliação (RF-API-12/13, AR-42).** Executa em **`REPEATABLE READ`** (snapshot único) sem lock: lê a wallet e soma o ledger no banco numa única consulta. Assim saldo e ledger vêm do mesmo instante mesmo com apostas em andamento, e a reconciliação não bloqueia o processamento (testado de forma determinística, forçando um commit entre as duas leituras). `difference = storedBalance − calculatedBalance` (pode ser negativa). Divergência é **dado**, não erro: 200 com `consistent: false`; é logada (só ids e contagem, sem valores) e contada em `reconciliation_divergences_total`. **Nunca é corrigida.**
+- **Erros.** Todo erro sai como `application/problem+json` (`ProblemDetailsFilter` global) com `code`, `correlationId` e, na validação, `errors[]` (caminho + motivo, sem ecoar o valor enviado). `toProblem` é uma função pura: `DomainError` de entrada malformada → 400; outros `DomainError` → 422 com o próprio `code`; erro transitório de infra → 503 + `Retry-After`; o resto → 500. O log de 5xx traz só nome e classificação, **nunca a mensagem** (erros do PostgreSQL podem conter a linha inteira, inclusive saldo).
+- **Validação de borda.** `zod` estrito (campos desconhecidos rejeitados); ids de rota validados como UUID antes de tocar o banco (senão o cast `uuid` do PostgreSQL viraria 500).
+- **Correlação.** `x-correlation-id` do cliente é aceito só se for seguro para log (`[A-Za-z0-9._:-]{1,128}`); senão é gerado. Volta no header e no corpo dos erros.
+- **Auth (RF-AUTH-01).** `AuthGuard` global no-op + `@Public()` (health) + `ProviderIdentityPort` no-op, em `src/auth`.
+- **Unit of Work.** Ganhou a opção `isolation` (`READ COMMITTED` padrão | `REPEATABLE READ`).
+- **Métricas.** `AppMetrics` (prom-client) nasce com `reconciliation_divergences_total`; o M11 acrescenta as demais e o endpoint `/metrics`.
+
 ---
 
 ## 14. D12 — Estrutura de módulos e camadas
@@ -840,3 +860,4 @@ Decisão do autor: autenticação **não será implementada** (não pontua e nã
 | 2026-10-24 | M3: domínio da `Wallet` e do `WalletLedgerEntry` (§5.1). Adaptação: `Wallet.open` devolve `{ wallet, openingEntry }`. Kernel ganhou `InvalidArgumentError`, `requireText` e `requireDate`. |
 | 2026-10-24 | M4: domínio de Wagering (§9.4), eventos de integração, `InboxMessage`/`OutboxMessage`. Kernel ganhou `backoff`, `plain-json` e `IntegrationEvent`. Detalhes decididos: ordem das verificações da política, `providerActionFor`, TTL inclusivo. |
 | 2026-10-24 | M5: persistência (§8.5). `TableDef` como fonte única de schema; migrations SQL à mão (tabelas + triggers); repositórios, `UnitOfWork`, `ErrorClassifier`, invariant checker. **Revisão do D3 (§5.2):** `FOR NO KEY UPDATE` no lugar de `FOR UPDATE`, após deadlock real entre o `KEY SHARE` das FKs e o lock da wallet. Achado: `em.execute` devolve `timestamptz` como texto. |
+| 2026-10-26 | M6: API de wallets (§13.4). Porta `OpeningRecorder` entre os contextos; cursor opaco por `seq`; reconciliação em `REPEATABLE READ`; `problem+json` global com `toProblem` puro; `AuthGuard` no-op. `UnitOfWork` ganhou `isolation`. Política de mutation check proporcional ao risco registrada em `milestones.md`. |

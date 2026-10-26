@@ -30,6 +30,12 @@
       "preset": "recommended"
     }
   },
+  "overrides": [
+    {
+      "includes": ["test/**"],
+      "linter": { "rules": { "suspicious": { "noExplicitAny": "off" } } }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",

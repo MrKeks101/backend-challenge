@@ -17,6 +17,52 @@ afterAll(async () => {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+describe("UnitOfWork.run: nível de isolamento", () => {
+  const isolation = () =>
+    db.uow
+      .current()
+      .execute<{ transaction_isolation: string }[]>("SHOW transaction_isolation")
+      .then((rows) => rows[0]?.transaction_isolation);
+
+  test("o padrão é READ COMMITTED", async () => {
+    expect(await db.uow.run(isolation)).toBe("read committed");
+  });
+
+  test("REPEATABLE READ é aplicado à transação", async () => {
+    expect(await db.uow.run(isolation, { isolation: "REPEATABLE READ" })).toBe("repeatable read");
+  });
+
+  /** Lê quantas linhas o consumidor tem no inbox antes e depois de um commit feito por OUTRA conexão. */
+  async function countAroundForeignCommit(options?: { isolation: "REPEATABLE READ" }) {
+    const consumer = `snap-${db.ids.next()}`;
+    const count = async () =>
+      (
+        await db.uow
+          .current()
+          .execute<{ n: string }[]>(
+            "SELECT count(*)::text AS n FROM inbox_messages WHERE consumer_name = ?",
+            [consumer],
+          )
+      )[0]?.n;
+    return db.uow.run(async () => {
+      const first = await count();
+      await db.sql(
+        "INSERT INTO inbox_messages (consumer_name, message_id, payload_hash, received_at) VALUES (?, 'm1', repeat('a', 64), now())",
+        [consumer],
+      ); // fora da transação em curso: outra conexão, commit imediato
+      return [first, await count()];
+    }, options);
+  }
+
+  test("REPEATABLE READ dá um snapshot: commits alheios não aparecem no meio da transação", async () => {
+    expect(await countAroundForeignCommit({ isolation: "REPEATABLE READ" })).toEqual(["0", "0"]);
+  });
+
+  test("READ COMMITTED enxerga o commit alheio (contraprova do teste anterior)", async () => {
+    expect(await countAroundForeignCommit()).toEqual(["0", "1"]);
+  });
+});
+
 describe("UnitOfWork.run", () => {
   test("devolve o valor de fn e faz COMMIT", async () => {
     const wallet = await openWalletInDb(db, "10.00");

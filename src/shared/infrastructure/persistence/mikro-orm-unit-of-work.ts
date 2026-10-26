@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { IsolationLevel } from "@mikro-orm/core";
 import type { EntityManager, MikroORM } from "@mikro-orm/postgresql";
 import type { UnitOfWork, UnitOfWorkOptions } from "../../application/unit-of-work";
 import { InvalidArgumentError } from "../../kernel";
@@ -40,12 +41,20 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
       "statementTimeoutMs",
     );
 
-    return this.orm.em.fork().transactional(async (em) => {
-      // SET LOCAL não aceita parâmetros: os valores são inteiros validados acima.
-      await em.execute(`SET LOCAL lock_timeout = ${lockTimeout}`);
-      await em.execute(`SET LOCAL statement_timeout = ${statementTimeout}`);
-      return this.storage.run({ em: em as EntityManager }, fn);
-    });
+    const isolationLevel =
+      options.isolation === "REPEATABLE READ"
+        ? IsolationLevel.REPEATABLE_READ
+        : IsolationLevel.READ_COMMITTED;
+
+    return this.orm.em.fork().transactional(
+      async (em) => {
+        // SET LOCAL não aceita parâmetros: os valores são inteiros validados acima.
+        await em.execute(`SET LOCAL lock_timeout = ${lockTimeout}`);
+        await em.execute(`SET LOCAL statement_timeout = ${statementTimeout}`);
+        return this.storage.run({ em: em as EntityManager }, fn);
+      },
+      { isolationLevel },
+    );
   }
 
   /** `EntityManager` da transação em curso; fora de uma, um `em` novo (cada comando em autocommit). */

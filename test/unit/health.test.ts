@@ -1,19 +1,20 @@
 import "reflect-metadata";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import type { INestApplication } from "@nestjs/common";
+import { Module } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
+import { AuthModule } from "../../src/auth/auth.module";
+import { HealthModule } from "../../src/health/health.module";
 
-// O ENV é validado ao subir o módulo; valores padrão só para este teste não depender de um .env.
-process.env.DATABASE_URL ??= "postgres://wagering:wagering@localhost:5432/wagering";
-process.env.AWS_ACCESS_KEY_ID ??= "test";
-process.env.AWS_SECRET_ACCESS_KEY ??= "test";
+// Só health + auth: o liveness não pode depender de banco nem de fila (o AppModule completo exige ambos).
+@Module({ imports: [AuthModule, HealthModule] })
+class HealthOnlyModule {}
 
 let app: INestApplication;
 let baseUrl: string;
 
 beforeAll(async () => {
-  const { AppModule } = await import("../../src/app.module");
-  app = await NestFactory.create(AppModule, { logger: false });
+  app = await NestFactory.create(HealthOnlyModule, { logger: false });
   await app.listen(0);
   baseUrl = await app.getUrl();
 });
