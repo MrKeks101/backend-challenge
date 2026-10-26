@@ -19,9 +19,11 @@ import {
 } from "../../wallet/application/ports/wallet-repositories";
 import { LedgerDirection, type Wallet } from "../../wallet/domain";
 import {
+  type FailureCode,
   firstPendingReferenceAttemptAt,
   type WagerOutcome,
   type WagerTransaction,
+  WagerTransactionFailed,
   WagerTransactionPendingReference,
   WagerTransactionProcessed,
   WagerTransactionRejected,
@@ -104,6 +106,36 @@ export class WagerOutcomeApplier {
         return;
       }
     }
+  }
+
+  /**
+   * Falha técnica permanente (`FAILED`): audita que a transação não pôde ser processada. Não mexe
+   * em saldo nem acorda dependentes (a transação não virou `PROCESSED` nem `REJECTED`).
+   */
+  async applyFailure({
+    transaction,
+    wallet,
+    code,
+    at,
+    correlationId,
+  }: {
+    transaction: WagerTransaction;
+    wallet: Wallet;
+    code: FailureCode;
+    at: Date;
+    correlationId: string;
+  }): Promise<void> {
+    transaction.fail(code, at);
+    await this.transactions.update(transaction, at);
+    await this.emit(
+      WagerTransactionFailed.from(transaction, {
+        eventId: this.ids.next(),
+        correlationId,
+        causationId: transaction.id,
+        occurredAt: at,
+      }),
+      wallet,
+    );
   }
 
   /** Débito/crédito + `UPDATE … WHERE version` + lançamento. Devolve o lançamento criado. */

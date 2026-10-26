@@ -7,7 +7,12 @@ import {
   WALLET_REPOSITORY,
   type WalletRepository,
 } from "../../wallet/application/ports/wallet-repositories";
-import { decideWagerOutcome, WagerTransaction, type WagerTransactionKind } from "../domain";
+import {
+  decideWagerOutcome,
+  type FailureCode,
+  WagerTransaction,
+  type WagerTransactionKind,
+} from "../domain";
 import { ExternalTransactionIdConflictError, IdempotencyKeyConflictError } from "./errors";
 import {
   WAGER_TRANSACTION_REPOSITORY,
@@ -64,12 +69,45 @@ export class ProcessWagerTransactionUseCase {
     command: ProcessWagerTransactionCommand,
     context: ProcessContext,
   ): Promise<ProcessResult> {
-    // §7.1: valida o comando e a existência da wallet ANTES de abrir a transação. Nada é gravado.
-    this.build(command, this.clock.now());
-    if (!(await this.wallets.findById(command.walletId))) throw new WalletNotFoundError();
-
+    await this.preflight(command);
     return this.uow.run(() => this.processInTransaction(command, context), {
       retryOnConflict: CONFLICT_RETRIES,
+    });
+  }
+
+  /**
+   * §7.1: valida o comando e a existência da wallet ANTES de abrir a transação. Nada é gravado.
+   * Lança `InvalidWagerTransactionError` ou `WalletNotFoundError`.
+   */
+  async preflight(command: ProcessWagerTransactionCommand): Promise<void> {
+    this.build(command, this.clock.now());
+    if (!(await this.wallets.findById(command.walletId))) throw new WalletNotFoundError();
+  }
+
+  /**
+   * Registra, em transação própria, que o comando falhou de forma permanente (`FAILED`). Só cria o
+   * registro se a idempotency key ainda não existe: uma transação com estado nunca é sobrescrita.
+   * Devolve `false` quando não gravou nada.
+   */
+  async recordFailure(
+    command: ProcessWagerTransactionCommand,
+    code: FailureCode,
+    context: ProcessContext,
+  ): Promise<boolean> {
+    return this.uow.run(async () => {
+      const now = this.clock.now();
+      const transaction = this.build(command, now);
+      if (!(await this.transactions.claim(transaction))) return false;
+      const wallet = await this.wallets.findByIdForUpdate(transaction.walletId);
+      if (!wallet) throw new WalletNotFoundError();
+      await this.applier.applyFailure({
+        transaction,
+        wallet,
+        code,
+        at: now,
+        correlationId: context.correlationId,
+      });
+      return true;
     });
   }
 

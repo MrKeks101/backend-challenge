@@ -1,4 +1,4 @@
-export { InvalidMessageStateError } from "./errors";
+export { InvalidMessageStateError, MessagePayloadMismatchError } from "./errors";
 export {
   InboxMessage,
   type InboxMessageState,

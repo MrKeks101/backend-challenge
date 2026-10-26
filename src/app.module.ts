@@ -1,6 +1,7 @@
 import { type MiddlewareConsumer, Module, type NestModule, RequestMethod } from "@nestjs/common";
 import { APP_FILTER } from "@nestjs/core";
 import { AuthModule } from "./auth/auth.module";
+import { ConsumerModule } from "./consumer/consumer.module";
 import { HealthModule } from "./health/health.module";
 import { ReadinessModule } from "./health/readiness.module";
 import { MessagingModule } from "./messaging/messaging.module";
@@ -21,6 +22,7 @@ import { WalletModule } from "./wallet/wallet.module";
     HealthModule,
     ReadinessModule,
     MessagingModule,
+    ConsumerModule,
     WalletModule,
     WageringModule,
   ],

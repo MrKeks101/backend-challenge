@@ -4,3 +4,12 @@ import { DomainError } from "../../shared/kernel";
 export class InvalidMessageStateError extends DomainError {
   readonly code = "INVALID_MESSAGE_STATE";
 }
+
+/** O mesmo `messageId` chegou com conteúdo diferente: anomalia do produtor, não duplicata. */
+export class MessagePayloadMismatchError extends DomainError {
+  readonly code = "MESSAGE_PAYLOAD_MISMATCH";
+
+  constructor() {
+    super("message id was already received with a different payload");
+  }
+}

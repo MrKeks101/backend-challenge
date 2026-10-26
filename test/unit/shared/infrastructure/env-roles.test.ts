@@ -36,6 +36,46 @@ describe("APP_ROLES", () => {
   });
 });
 
+describe("configuração do consumidor", () => {
+  test("padrões", () => {
+    const env = loadEnv(base);
+    expect(env).toMatchObject({
+      CONSUMER_POLLERS: 4,
+      CONSUMER_BATCH_SIZE: 10,
+      CONSUMER_WAIT_SECONDS: 20,
+      CONSUMER_RETRY_BASE_SECONDS: 2,
+      SHUTDOWN_GRACE_MS: 25_000,
+    });
+  });
+
+  test("limites aceitos nas bordas", () => {
+    const env = loadEnv({
+      ...base,
+      CONSUMER_BATCH_SIZE: "1",
+      CONSUMER_WAIT_SECONDS: "0",
+      CONSUMER_RETRY_BASE_SECONDS: "0",
+    });
+    expect(env).toMatchObject({
+      CONSUMER_BATCH_SIZE: 1,
+      CONSUMER_WAIT_SECONDS: 0,
+      CONSUMER_RETRY_BASE_SECONDS: 0,
+    });
+  });
+
+  test.each([
+    ["CONSUMER_POLLERS", "0"],
+    ["CONSUMER_BATCH_SIZE", "0"],
+    ["CONSUMER_BATCH_SIZE", "11"], // o SQS entrega no máximo 10 por receive
+    ["CONSUMER_WAIT_SECONDS", "21"], // long poll máximo do SQS: 20 s
+    ["CONSUMER_WAIT_SECONDS", "-1"],
+    ["CONSUMER_RETRY_BASE_SECONDS", "-1"],
+    ["CONSUMER_RETRY_BASE_SECONDS", "3601"],
+    ["SHUTDOWN_GRACE_MS", "0"],
+  ])("rejeita %s=%s", (key, value) => {
+    expect(() => loadEnv({ ...base, [key]: value })).toThrow(key);
+  });
+});
+
 describe("configuração do publisher", () => {
   test("padrões", () => {
     const env = loadEnv(base);

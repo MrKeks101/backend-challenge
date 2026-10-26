@@ -10,7 +10,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 4. Cada requisito do `requirements.md` deve ter pelo menos um teste que o cubra; a coluna **Cobre** indica onde ele nasce.
 5. Mensagem de commit: `<tipo>: <resumo>` (`docs`, `chore`, `feat`, `test`). O texto sugerido de cada milestone é só uma sugestão.
 6. Status: `[ ]` pendente · `[~]` em andamento · `[x]` fechado.
-7. **Mutation check proporcional ao risco:** completo (todos os mutantes relevantes) nos milestones de maior risco — M7 (caso de uso de apostas), M9 (outbox/publisher) e M10 (reprocessador); reduzido (cerca de 10–20 mutantes, só nos arquivos de teste relacionados) nos de risco médio, como o M6; nenhum nos de infraestrutura simples, documentação, observabilidade ou configuração. Testes, `tsc`, lint e guardas estáticas rodam em **todos** os milestones.
+7. **Mutation check:** feito completo no M7 (caso de uso de apostas) e reduzido no M6 e no M8 (interrompido por decisão do autor). **A partir do M9 não há mais mutation check**: cada milestone fecha com testes de unidade e de integração, e a suíte completa roda no final. Testes, `tsc`, lint e guardas estáticas rodam em **todos** os milestones.
 
 ## Visão geral
 
@@ -25,7 +25,7 @@ Plano de implementação em etapas **sequenciais**. Cada milestone é **um commi
 | M6 | Wallets: casos de uso e API HTTP | [x] |
 | M7 | Processamento de transações via HTTP (idempotência e concorrência) | [x] |
 | M8 | Outbox publisher e SQS de saída | [x] |
-| M9 | Consumidor SQS (inbox, retry, DLQ, shutdown) | [ ] |
+| M9 | Consumidor SQS (inbox, retry, DLQ, shutdown) | [x] |
 | M10 | Reprocessador de `PENDING_REFERENCE` | [ ] |
 | M11 | Observabilidade | [ ] |
 | M12 | Suíte de concorrência multi-instância e recuperação | [ ] |

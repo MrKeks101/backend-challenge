@@ -42,6 +42,14 @@ const envSchema = z.object({
     .string()
     .regex(/^[A-Za-z0-9_-]{0,40}$/, "letters, digits, '-' and '_' only")
     .default(""),
+  /** Laços de long poll do consumidor. */
+  CONSUMER_POLLERS: positiveInt(4),
+  CONSUMER_BATCH_SIZE: z.coerce.number().int().min(1).max(10).default(10),
+  CONSUMER_WAIT_SECONDS: z.coerce.number().int().min(0).max(20).default(20),
+  /** Base do backoff de visibilidade em retry; 0 = reentrega imediata. */
+  CONSUMER_RETRY_BASE_SECONDS: z.coerce.number().int().min(0).max(3600).default(2),
+  /** Quanto o SIGTERM espera as mensagens em andamento (menor que o grace period do orquestrador). */
+  SHUTDOWN_GRACE_MS: positiveInt(25_000),
   /** Pausa do publisher quando a outbox está vazia. */
   OUTBOX_POLL_INTERVAL_MS: positiveInt(500),
   OUTBOX_BATCH_SIZE: positiveInt(20),
