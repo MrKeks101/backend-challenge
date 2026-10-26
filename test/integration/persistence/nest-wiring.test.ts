@@ -14,6 +14,8 @@ import {
 } from "../../../src/messaging/infrastructure/persistence/messaging.repositories";
 import { UNIT_OF_WORK, type UnitOfWork } from "../../../src/shared/application/unit-of-work";
 import { ENV } from "../../../src/shared/infrastructure/config/config.module";
+import { KernelModule } from "../../../src/shared/infrastructure/kernel.module";
+import { MetricsModule } from "../../../src/shared/infrastructure/metrics/metrics.module";
 import {
   MikroOrmUnitOfWork,
   UNIT_OF_WORK_IMPL,
@@ -48,6 +50,8 @@ beforeAll(async () => {
   @Module({
     imports: [
       TestConfigModule,
+      KernelModule,
+      MetricsModule,
       DatabaseModule,
       WalletPersistenceModule,
       WageringPersistenceModule,

@@ -15,7 +15,7 @@ export type SubmitBody = Record<string, unknown>;
 /** Helpers de alto nível sobre a API real, para os testes de processamento de transações. */
 export class WageringApi {
   constructor(
-    readonly api: TestApi,
+    readonly api: Pick<TestApi, "request">,
     readonly db: TestDatabase,
   ) {}
 

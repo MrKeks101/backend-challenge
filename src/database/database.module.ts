@@ -17,11 +17,13 @@ import { createOrm } from "./orm";
     { provide: MIKRO_ORM, inject: [ENV], useFactory: (env: Env) => createOrm(env.DATABASE_URL) },
     {
       provide: UNIT_OF_WORK_IMPL,
-      inject: [MIKRO_ORM, APP_METRICS],
-      useFactory: (orm: MikroORM, metrics: AppMetrics) =>
-        new MikroOrmUnitOfWork(orm, {
-          lockConflict: (reason) => metrics.lockConflicts.inc({ reason }),
-        }),
+      // Métricas são opcionais aqui: o Unit of Work funciona (sem contar conflitos) sem elas.
+      inject: [MIKRO_ORM, { token: APP_METRICS, optional: true }],
+      useFactory: (orm: MikroORM, metrics: AppMetrics | undefined) =>
+        new MikroOrmUnitOfWork(
+          orm,
+          metrics && { lockConflict: (reason) => metrics.lockConflicts.inc({ reason }) },
+        ),
     },
     { provide: UNIT_OF_WORK, useExisting: UNIT_OF_WORK_IMPL },
   ],
